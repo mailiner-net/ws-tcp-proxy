@@ -7,6 +7,10 @@ use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::Registry;
 use std::time::Instant;
 
+lazy_static! {
+    pub static ref METRICS: Metrics = Metrics::new();
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
 pub enum Error {
     Handshake,
