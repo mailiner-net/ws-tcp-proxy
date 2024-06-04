@@ -13,10 +13,20 @@ use tracing_subscriber;
 use futures_util::{sink::SinkExt, stream::{StreamExt, SplitSink, SplitStream}};
 
 #[macro_use]
+extern crate lazy_static;
+
+#[macro_use]
 extern crate slog;
 extern crate slog_term;
 
 use slog::Drain;
+
+mod metrics;
+use metrics::{Metrics, ScopeDuration, ScopeGauge};
+
+lazy_static! {
+    static ref METRICS: Metrics = Metrics::new();
+}
 
 #[tokio::main]
 async fn main() {
@@ -30,7 +40,8 @@ async fn main() {
     let root = slog::Logger::root(drain, o!());
 
     let app = Router::new()
-        .route("/proxy", get(proxy).with_state(root.clone()));
+        .route("/proxy", get(proxy).with_state(root.clone()))
+        .route("/metrics", get(dump_metrics));
 
     let listener = TcpListener::bind("0.0.0.0:9400").await.unwrap();
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
@@ -58,6 +69,7 @@ impl Connection {
 
     async fn send_tcp_message(&self, tcp: &mut WriteHalf<TcpStream>, data: Vec<u8>) {
         if let Err(e) = tcp.write_all(data.borrow()).await {
+            METRICS.inc_tcp_error(metrics::Error::Send);
             error!(self.log, "Error writing to a TCP upstream"; "error" => e.to_string());
         }
         debug!(self.log, "Sent bytes to TCP socket"; "bytes" => data.len());
@@ -72,6 +84,7 @@ impl Connection {
                         self.send_tcp_message(tcp, msg.into_data()).await;
                     },
                     Err(e) => {
+                        METRICS.inc_ws_error(metrics::Error::Read);
                         error!(self.log, "Error reading from websocket"; "error" => e.to_string());
                         return;
                     }
@@ -93,6 +106,7 @@ impl Connection {
                     size
                 },
                 Err(e) => {
+                    METRICS.inc_tcp_error(metrics::Error::Read);
                     error!(self.log, "Error reading from upstream TCP"; "error" => e.to_string());
                     return;
                 }
@@ -105,6 +119,7 @@ impl Connection {
 
             let msg = Message::Binary(buffer[0..size].to_vec());
             if let Err(e) = ws.send(msg).await {
+                METRICS.inc_ws_error(metrics::Error::Send);
                 error!(self.log, "Error sending message to WebSocket client"; "error" => e.to_string());
                 return;
             }
@@ -113,12 +128,18 @@ impl Connection {
     }
 
     pub async fn run(&mut self, websocket: WebSocket) {
+        let _active_conn = ScopeGauge::new(&METRICS.active_connections);
+        let duration = ScopeDuration::new(&METRICS.connection_duration);
+
+        self.log = self.log.new(o!("remote" => self.remote.clone()));
+
         let tcp = match tokio::net::TcpStream::connect(self.remote.clone()).await {
             Ok(tcp_stream) => {
                 info!(self.log, "Established TCP connection to upstream");
                 tcp_stream
             },
             Err(e) => {
+                METRICS.inc_tcp_error(metrics::Error::Handshake);
                 error!(self.log, "Failed to establish TCP connection to upstream"; "error" => e.to_string());
                 return;
             }
@@ -127,23 +148,24 @@ impl Connection {
         let (mut tcp_read, mut tcp_write) = tokio::io::split(tcp);
         let (mut ws_write, mut ws_read) = websocket.split();
 
-        self.log = self.log.new(o!("remote" => self.remote.clone()));
         tokio::select!(
             _ = self.ws_to_tcp(&mut ws_read, &mut tcp_write) => {
                 info!(self.log, "WS to TCP task finished");
                 if let Err(e) = ws_write.close().await {
+                    METRICS.inc_tcp_error(metrics::Error::Shutdown);
                     error!(self.log, "Error closing WS connection"; "error" => e.to_string());
                 }
             },
             _ = self.tcp_to_ws(&mut ws_write, &mut tcp_read) => {
                 info!(self.log, "TCP to WS task finished");
                 if let Err(e) = tcp_write.shutdown().await {
+                    METRICS.inc_tcp_error(metrics::Error::Shutdown);
                     error!(self.log, "Error shutting down TCP connection"; "error" => e.to_string());
                 }
             }
         );
 
-        info!(self.log, "Conection closed");
+        info!(self.log, "Conection closed (duration {} s" ,duration.duration());
     }
 }
 
@@ -157,10 +179,16 @@ async fn proxy(query: Query<Proxy>, ws: WebSocketUpgrade, ConnectInfo(addr): Con
     let fail_log = log.clone();
     let upgrade_log = log.clone();
     ws.on_failed_upgrade(move |error: Error| {
+        METRICS.inc_ws_error(metrics::Error::Handshake);
         error!(fail_log, "Failed to upgrade WebSocket connection"; "error" => error.to_string());
     }).on_upgrade(move |socket| {
         async move {
             Connection::new(query.remote.clone(), upgrade_log).run(socket).await;
         }
     })
+}
+
+#[debug_handler]
+async fn dump_metrics() -> impl IntoResponse {
+    METRICS.encode()
 }
