@@ -1,15 +1,22 @@
 use std::borrow::{Borrow, BorrowMut};
 use std::net::SocketAddr;
-use axum::extract::{ws::Message, ws::WebSocket, Query, WebSocketUpgrade, ConnectInfo};
+use axum::extract::{ws::Message, ws::WebSocket, Query, WebSocketUpgrade, ConnectInfo, State};
 use axum::response::IntoResponse;
-use axum::Router;
+use axum::{Error, Router};
 use axum::routing::get;
+use axum::debug_handler;
+use slog::Logger;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use serde::Deserialize;
 use tracing_subscriber;
-use axum::debug_handler;
 use futures_util::{sink::SinkExt, stream::{StreamExt, SplitSink, SplitStream}};
+
+#[macro_use]
+extern crate slog;
+extern crate slog_term;
+
+use slog::Drain;
 
 #[tokio::main]
 async fn main() {
@@ -17,8 +24,13 @@ async fn main() {
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::FullFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+    let root = slog::Logger::root(drain, o!());
+
     let app = Router::new()
-        .route("/proxy", get(proxy));
+        .route("/proxy", get(proxy).with_state(root.clone()));
 
     let listener = TcpListener::bind("0.0.0.0:9400").await.unwrap();
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
@@ -30,92 +42,125 @@ struct Proxy {
     remote: String
 }
 
-#[debug_handler]
-async fn proxy(query: Query<Proxy>, ws: WebSocketUpgrade, ConnectInfo(addr): ConnectInfo<SocketAddr>) -> impl IntoResponse {
-    log::info!("Incoming WS connection from {:?} for remote {}", addr, query.remote);
-    ws.on_failed_upgrade(|error| {
-        log::error!("Failed to upgrade WebSocket connection: {:?}", error)
-    }).on_upgrade(move |socket| handle_socket(socket, query))
+struct Connection {
+    remote: String,
+    log: Logger
 }
 
-async fn ws_to_tcp(mut websocket: SplitStream<WebSocket>, mut tcp_socket: WriteHalf<TcpStream>) {
-    loop {
-        let msg = {
-            log::info!("Waiting for incoming WS data");
-            if let Some(msg) = websocket.next().await {
+impl Connection {
+
+    pub fn new(remote: String, log: Logger) -> Self {
+        Connection {
+            remote,
+            log
+        }
+    }
+
+    async fn send_tcp_message(&self, tcp: &mut WriteHalf<TcpStream>, data: Vec<u8>) {
+        if let Err(e) = tcp.write_all(data.borrow()).await {
+            error!(self.log, "Error writing to a TCP upstream"; "error" => e.to_string());
+        }
+        debug!(self.log, "Sent bytes to TCP socket"; "bytes" => data.len());
+    }
+
+    async fn ws_to_tcp(&self, ws: &mut SplitStream<WebSocket>, tcp: &mut WriteHalf<TcpStream>) {
+        info!(self.log, "Waiting for incoming WS data");
+        loop {
+            if let Some(msg) = ws.next().await {
                 match msg {
                     Ok(msg) => {
-                        log::info!("Received message from WS");
-                        msg
+                        self.send_tcp_message(tcp, msg.into_data()).await;
                     },
                     Err(e) => {
-                        log::error!("Error reading from websocket: {:?}", e);
+                        error!(self.log, "Error reading from websocket"; "error" => e.to_string());
                         return;
                     }
                 }
             } else {
-                log::error!("Client has disconnected!");
+                error!(self.log, "Client has disconnected!");
+                return;
+            }
+        }
+    }
+
+    async fn tcp_to_ws(&self, ws: &mut SplitSink<WebSocket, Message>, tcp: &mut ReadHalf<TcpStream>) {
+        let mut buffer = [0; 1024];
+        loop {
+            info!(self.log, "Waiting for incoming TCP data");
+            let size = match tcp.read(buffer.borrow_mut()).await {
+                Ok(size) => {
+                    info!(self.log, "Received data from TCP upstream"; "bytes" => size);
+                    size
+                },
+                Err(e) => {
+                    error!(self.log, "Error reading from upstream TCP"; "error" => e.to_string());
+                    return;
+                }
+            };
+
+            if size == 0 {
+                info!(self.log, "Upstream has closed the connection");
+                return;
+            }
+
+            let msg = Message::Binary(buffer[0..size].to_vec());
+            if let Err(e) = ws.send(msg).await {
+                error!(self.log, "Error sending message to WebSocket client"; "error" => e.to_string());
+                return;
+            }
+            debug!(self.log, "Sent bytes to WS"; "bytes" => size);
+        }
+    }
+
+    pub async fn run(&mut self, websocket: WebSocket) {
+        let tcp = match tokio::net::TcpStream::connect(self.remote.clone()).await {
+            Ok(tcp_stream) => {
+                info!(self.log, "Established TCP connection to upstream");
+                tcp_stream
+            },
+            Err(e) => {
+                error!(self.log, "Failed to establish TCP connection to upstream"; "error" => e.to_string());
                 return;
             }
         };
 
-        if let Err(e) = tcp_socket.write_all(msg.into_data().borrow()).await {
-            log::error!("Error writing to a client: {:?}", e);
-            return;
-        }
-        log::debug!("Sent {} bytes to TCP socket", 'X');
+        let (mut tcp_read, mut tcp_write) = tokio::io::split(tcp);
+        let (mut ws_write, mut ws_read) = websocket.split();
+
+        self.log = self.log.new(o!("remote" => self.remote.clone()));
+        tokio::select!(
+            _ = self.ws_to_tcp(&mut ws_read, &mut tcp_write) => {
+                info!(self.log, "WS to TCP task finished");
+                if let Err(e) = ws_write.close().await {
+                    error!(self.log, "Error closing WS connection"; "error" => e.to_string());
+                }
+            },
+            _ = self.tcp_to_ws(&mut ws_write, &mut tcp_read) => {
+                info!(self.log, "TCP to WS task finished");
+                if let Err(e) = tcp_write.shutdown().await {
+                    error!(self.log, "Error shutting down TCP connection"; "error" => e.to_string());
+                }
+            }
+        );
+
+        info!(self.log, "Conection closed");
     }
 }
 
-async fn tcp_to_ws(mut websocket: SplitSink<WebSocket, Message>, mut tcp_socket: ReadHalf<TcpStream>) {
-    let mut buffer = [0; 1024];
-    loop {
-        log::info!("Waiting for incoming TCP data");
-        let size = match tcp_socket.read(buffer.borrow_mut()).await {
-            Ok(size) => {
-                log::info!("Received {} bytes from TCP", size);
-                size
-            },
-            Err(e) => {
-                log::error!("Error reading from upstream TCP: {:?}", e);
-                return;
-            }
-        };
 
-        let msg = Message::Binary(buffer[0..size].to_vec());
-        {
-            if let Err(e) = websocket.send(msg).await {
-                log::error!("Error sending message to WebSocket client: {:?}", e);
-                return;
-            }
-            log::debug!("Sent {} bytes to WS", size);
+
+#[debug_handler]
+async fn proxy(query: Query<Proxy>, ws: WebSocketUpgrade, ConnectInfo(addr): ConnectInfo<SocketAddr>, State(log): State<Logger>) -> impl IntoResponse {
+    let log = log.new(o!("client" => addr.to_string()));
+
+    info!(log, "Incoming WS connection");
+    let fail_log = log.clone();
+    let upgrade_log = log.clone();
+    ws.on_failed_upgrade(move |error: Error| {
+        error!(fail_log, "Failed to upgrade WebSocket connection"; "error" => error.to_string());
+    }).on_upgrade(move |socket| {
+        async move {
+            Connection::new(query.remote.clone(), upgrade_log).run(socket).await;
         }
-    };
-}
-
-async fn handle_socket(websocket: WebSocket, query: Query<Proxy>) {
-    let tcp_stream = match tokio::net::TcpStream::connect(query.remote.clone()).await {
-        Ok(tcp_stream) => {
-            log::info!("Established TCP connection to {}", query.remote);
-            tcp_stream
-        },
-        Err(e) => {
-            log::error!("Failed to establish TCP connection to {}: {:?}", query.remote, e);
-            return;
-        }
-    };
-
-    let (tcp_read, tcp_write) = tokio::io::split(tcp_stream);
-    let (ws_write, ws_read) = websocket.split();
-
-    tokio::select!(
-        _ = ws_to_tcp(ws_read, tcp_write) => {
-            log::info!("WS to TCP task finished");
-        },
-        _ = tcp_to_ws(ws_write, tcp_read) => {
-            log::info!("TCP to WS task finished");
-        }
-    );
-
-    log::info!("Conection closed");
+    })
 }
