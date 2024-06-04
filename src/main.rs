@@ -4,6 +4,7 @@ use axum::response::IntoResponse;
 use axum::{Error, Router};
 use axum::routing::get;
 use axum::debug_handler;
+use clap::{Parser, arg, command};
 use serde::Deserialize;
 use tokio::net::TcpListener;
 use tracing_subscriber;
@@ -23,9 +24,20 @@ use metrics::METRICS;
 mod connection;
 use connection::Connection;
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value_t = 9400)]
+    port: u16,
+
+    #[arg(short, long, default_value_t = String::from("0.0.0.0") )]
+    bind: String
+}
 
 #[tokio::main]
 async fn main() {
+    let args = Args::parse();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .init();
@@ -39,7 +51,7 @@ async fn main() {
         .route("/proxy", get(proxy).with_state(root.clone()))
         .route("/metrics", get(dump_metrics));
 
-    let listener = TcpListener::bind("0.0.0.0:9400").await.unwrap();
+    let listener = TcpListener::bind(format!("{}:{}", args.bind, args.port)).await.unwrap();
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
 }
 
