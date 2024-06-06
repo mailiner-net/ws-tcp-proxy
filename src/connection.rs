@@ -5,7 +5,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use futures_util::{sink::SinkExt, stream::{StreamExt, SplitSink, SplitStream}};
 
-use crate::metrics;
+use crate::metrics::{self, ConnectionsLabels};
 use crate::metrics::{METRICS, ScopeDuration, ScopeGauge};
 
 pub struct Connection {
@@ -85,6 +85,7 @@ impl Connection {
     pub async fn run(&mut self, websocket: WebSocket) {
         let _active_conn = ScopeGauge::new(&METRICS.active_connections);
         let duration = ScopeDuration::new(&METRICS.connection_duration);
+        METRICS.connections.get_or_create( &ConnectionsLabels { remote: self.remote.clone() }).inc();
 
         self.log = self.log.new(o!("remote" => self.remote.clone()));
 

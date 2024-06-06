@@ -24,6 +24,11 @@ pub struct ErrorLabels {
     pub error: Error
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ConnectionsLabels {
+    pub remote: String
+}
+
 pub struct Metrics {
     pub registry: Registry,
 
@@ -33,6 +38,8 @@ pub struct Metrics {
     pub tcp_errors: Family<ErrorLabels, Counter>,
 
     pub connection_duration: Histogram,
+
+    pub connections: Family<ConnectionsLabels, Counter>
 }
 
 // bucket duration in seconds
@@ -45,13 +52,15 @@ impl Metrics {
             active_connections: Gauge::default(),
             ws_errors: Family::<ErrorLabels, Counter>::default(),
             tcp_errors: Family::<ErrorLabels, Counter>::default(),
-            connection_duration: Histogram::new(DURATION_BUCKETS.into_iter())
+            connection_duration: Histogram::new(DURATION_BUCKETS.into_iter()),
+            connections: Family::<ConnectionsLabels, Counter>::default()
         };
 
         metrics.registry.register("active_connections", "Number of currently active collections", metrics.active_connections.clone());
         metrics.registry.register("ws_errors", "Number of errors that occurred in the WebSocket connection", metrics.ws_errors.clone());
         metrics.registry.register("tcp_errors", "Number of errors that occurred in the TCP connection", metrics.tcp_errors.clone());
         metrics.registry.register("connection_duration", "Histogram of connection durations", metrics.connection_duration.clone());
+        metrics.registry.register("connections", "Number of connections to remotes", metrics.connections.clone());
 
         metrics
     }
