@@ -27,11 +27,11 @@ impl Connection {
             METRICS.inc_tcp_error(metrics::Error::Send);
             error!(self.log, "Error writing to a TCP upstream"; "error" => e.to_string());
         }
-        debug!(self.log, "Sent bytes to TCP socket"; "bytes" => data.len());
+        trace!(self.log, "Sent bytes to TCP socket"; "bytes" => data.len());
     }
 
     async fn ws_to_tcp(&self, ws: &mut SplitStream<WebSocket>, tcp: &mut WriteHalf<TcpStream>) {
-        info!(self.log, "Waiting for incoming WS data");
+        trace!(self.log, "Waiting for incoming WS data");
         loop {
             if let Some(msg) = ws.next().await {
                 match msg {
@@ -54,10 +54,10 @@ impl Connection {
     async fn tcp_to_ws(&self, ws: &mut SplitSink<WebSocket, Message>, tcp: &mut ReadHalf<TcpStream>) {
         let mut buffer = [0; 1024];
         loop {
-            info!(self.log, "Waiting for incoming TCP data");
+            trace!(self.log, "Waiting for incoming TCP data");
             let size = match tcp.read(buffer.borrow_mut()).await {
                 Ok(size) => {
-                    info!(self.log, "Received data from TCP upstream"; "bytes" => size);
+                    trace!(self.log, "Received data from TCP upstream"; "bytes" => size);
                     size
                 },
                 Err(e) => {
@@ -68,7 +68,7 @@ impl Connection {
             };
 
             if size == 0 {
-                info!(self.log, "Upstream has closed the connection");
+                debug!(self.log, "Upstream has closed the connection");
                 return;
             }
 
@@ -78,7 +78,7 @@ impl Connection {
                 error!(self.log, "Error sending message to WebSocket client"; "error" => e.to_string());
                 return;
             }
-            debug!(self.log, "Sent bytes to WS"; "bytes" => size);
+            trace!(self.log, "Sent bytes to WS"; "bytes" => size);
         }
     }
 
@@ -90,7 +90,7 @@ impl Connection {
 
         let tcp = match tokio::net::TcpStream::connect(self.remote.clone()).await {
             Ok(tcp_stream) => {
-                info!(self.log, "Established TCP connection to upstream");
+                debug!(self.log, "Established TCP connection to upstream");
                 tcp_stream
             },
             Err(e) => {
@@ -105,14 +105,14 @@ impl Connection {
 
         tokio::select!(
             _ = self.ws_to_tcp(&mut ws_read, &mut tcp_write) => {
-                info!(self.log, "WS to TCP task finished");
+                debug!(self.log, "WS to TCP task finished");
                 if let Err(e) = ws_write.close().await {
                     METRICS.inc_tcp_error(metrics::Error::Shutdown);
                     error!(self.log, "Error closing WS connection"; "error" => e.to_string());
                 }
             },
             _ = self.tcp_to_ws(&mut ws_write, &mut tcp_read) => {
-                info!(self.log, "TCP to WS task finished");
+                debug!(self.log, "TCP to WS task finished");
                 if let Err(e) = tcp_write.shutdown().await {
                     METRICS.inc_tcp_error(metrics::Error::Shutdown);
                     error!(self.log, "Error shutting down TCP connection"; "error" => e.to_string());
@@ -120,7 +120,7 @@ impl Connection {
             }
         );
 
-        info!(self.log, "Conection closed (duration {} s"   ,duration.duration());
+        debug!(self.log, "Conection closed"; "duration_secs" => duration.duration());
     }
 }
 

@@ -61,6 +61,7 @@ async fn main() {
         .route("/metrics", get(dump_metrics));
 
     let listener = TcpListener::bind(format!("{}:{}", args.bind, args.port)).await.unwrap();
+    info!(root, "WS<->TCP Proxy listening on {}:{}", args.bind, args.port);
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
 }
 
