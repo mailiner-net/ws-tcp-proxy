@@ -35,7 +35,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Error> {
     let args = Args::parse();
 
     tracing_subscriber::fmt()
@@ -47,23 +47,45 @@ async fn main() {
     let drain = slog_async::Async::new(drain).build().fuse();
     let root = slog::Logger::root(drain, o!());
 
-    let app = Router::new()
-        .route("/proxy", get(proxy).with_state(root.clone()))
-        .route("/metrics", get(dump_metrics));
+    let proxy = Proxy::bind(format!("{}:{}", args.bind, args.port)).await?;
+    proxy.serve().await
+}
 
-    let listener = TcpListener::bind(format!("{}:{}", args.bind, args.port)).await.unwrap();
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+struct Proxy {
+    listener: TcpListener
+}
+
+impl Proxy {
+    async fn bind(bind: String) -> Result<Self, Error> {
+        let listener = TcpListener::bind(addr).await?;
+        Self {
+            listener
+        }
+    }
+
+    fn port(&self) -> u16 {
+        self.listener.local_addr().unwrap().port()
+    }
+
+    async fn serve(&self) -> Result<(), Error> {
+        let app = Router::new()
+            .route("/proxy", get(proxy).with_state(root.clone()))
+            .route("/metrics", get(dump_metrics));
+
+        axum::serve(self.listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
-struct Proxy {
+struct QueryParams {
     token: String,
     remote: String
 }
 
 
 #[debug_handler]
-async fn proxy(query: Query<Proxy>, ws: WebSocketUpgrade, ConnectInfo(addr): ConnectInfo<SocketAddr>, State(log): State<Logger>) -> impl IntoResponse {
+async fn proxy(query: Query<QueryParams>, ws: WebSocketUpgrade, ConnectInfo(addr): ConnectInfo<SocketAddr>, State(log): State<Logger>) -> impl IntoResponse {
     let log = log.new(o!("client" => addr.to_string()));
 
     info!(log, "Incoming WS connection");
