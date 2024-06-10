@@ -62,7 +62,7 @@ async fn proxy_handler(
         return Err::<Body, StatusCode>(err).into_response();
     }
 
-    info!(log, "Incoming WS connection");
+    debug!(log, "Incoming WS connection");
     let fail_log = log.clone();
     let upgrade_log = log.clone();
     ws.on_failed_upgrade(move |error: axum::Error| {
