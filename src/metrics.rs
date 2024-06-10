@@ -6,6 +6,7 @@ use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::Registry;
 use std::time::Instant;
+use lazy_static::lazy_static;
 
 lazy_static! {
     pub static ref METRICS: Metrics = Metrics::new();

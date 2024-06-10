@@ -6,9 +6,6 @@ use once_cell::sync::OnceCell;
 use tokio::net::TcpListener;
 
 #[macro_use]
-extern crate lazy_static;
-
-#[macro_use]
 extern crate slog;
 extern crate slog_term;
 use slog::Drain;
@@ -37,20 +34,16 @@ fn parse_log_level(val: &str) -> slog::Level {
         .unwrap_or_else(|_| panic!("Invalid log level {}", val))
 }
 
-lazy_static! {
-    pub static ref PASETO_SECRET_KEY: Option<PasetoSymmetricKey<V4, Local>> = option_env!("MAILINER_PASETO_SECRET").and_then(|key| {
-        Some(PasetoSymmetricKey::<V4, Local>::from(Key::from(key.as_bytes())))
-    });
-}
-
 static DEFAULT_LOGGER: OnceCell<Logger> = OnceCell::new();
 
 fn init_logging(level: slog::Level) {
-    let decorator = slog_term::TermDecorator::new().build();
-    let drain = slog_term::FullFormat::new(decorator).build().fuse();
-    let drain = slog_async::Async::new(drain).build().fuse();
-    let drain = slog::LevelFilter::new(drain, level).fuse();
-    DEFAULT_LOGGER.set(slog::Logger::root(drain, o!())).unwrap();
+    DEFAULT_LOGGER.get_or_init(|| {
+        let decorator = slog_term::TermDecorator::new().build();
+        let drain = slog_term::FullFormat::new(decorator).build().fuse();
+        let drain = slog_async::Async::new(drain).build().fuse();
+        let drain = slog::LevelFilter::new(drain, level).fuse();
+        slog::Logger::root(drain, o!())
+    });
 }
 
 #[tokio::main]
@@ -59,7 +52,16 @@ async fn main() -> Result<(), tokio::io::Error> {
 
     init_logging(parse_log_level(&args.log_level));
 
+    let secret_key = option_env!("MAILINER_PASETO_SECRET").and_then(|key| {
+        Some(PasetoSymmetricKey::<V4, Local>::from(Key::from(key.as_bytes())))
+    });
+    if !cfg!(debug_assertions) && secret_key.is_none() {
+        panic!("MAILINER_PASETO_SECRET is not set in production build!");
+    }
+
     let listener = TcpListener::bind(format!("{}:{}", args.bind, args.port)).await?;
     info!(DEFAULT_LOGGER.get().unwrap(), "WS<->TCP Proxy listening on {}:{}", args.bind, args.port);
-    run_proxy(listener).await
+    run_proxy(listener, secret_key).await
 }
+
+
