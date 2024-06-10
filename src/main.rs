@@ -1,17 +1,9 @@
-use std::net::SocketAddr;
-use axum::body::Body;
-use axum::extract::{Query, WebSocketUpgrade, ConnectInfo, State};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::{Error, Router};
-use axum::routing::get;
-use axum::debug_handler;
-use clap::{Parser, arg, command};
-use serde::Deserialize;
-use tokio::net::TcpListener;
-use tracing_subscriber;
+use std::str::FromStr;
+use clap::{arg, command, Parser};
 use slog::Logger;
 use rusty_paseto::prelude::*;
+use once_cell::sync::OnceCell;
+use tokio::net::TcpListener;
 
 #[macro_use]
 extern crate lazy_static;
@@ -21,11 +13,11 @@ extern crate slog;
 extern crate slog_term;
 use slog::Drain;
 
-mod metrics;
-use metrics::METRICS;
-
 mod connection;
-use connection::Connection;
+mod metrics;
+mod server;
+
+use server::run_proxy;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -34,7 +26,15 @@ struct Args {
     port: u16,
 
     #[arg(short, long, default_value_t = String::from("0.0.0.0") )]
-    bind: String
+    bind: String,
+
+    #[arg(short = 'l', long, default_value = "info")]
+    log_level: String
+}
+
+fn parse_log_level(val: &str) -> slog::Level {
+    slog::Level::from_str(val)
+        .unwrap_or_else(|_| panic!("Invalid log level {}", val))
 }
 
 lazy_static! {
@@ -43,73 +43,23 @@ lazy_static! {
     });
 }
 
-#[tokio::main]
-async fn main() {
-    let args = Args::parse();
+static DEFAULT_LOGGER: OnceCell<Logger> = OnceCell::new();
 
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .init();
-
+fn init_logging(level: slog::Level) {
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::FullFormat::new(decorator).build().fuse();
     let drain = slog_async::Async::new(drain).build().fuse();
-    let root = slog::Logger::root(drain, o!());
-
-    let app = Router::new()
-        .route("/proxy", get(proxy).with_state(root.clone()))
-        .route("/metrics", get(dump_metrics));
-
-    let listener = TcpListener::bind(format!("{}:{}", args.bind, args.port)).await.unwrap();
-    info!(root, "WS<->TCP Proxy listening on {}:{}", args.bind, args.port);
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+    let drain = slog::LevelFilter::new(drain, level).fuse();
+    DEFAULT_LOGGER.set(slog::Logger::root(drain, o!())).unwrap();
 }
 
-#[derive(Deserialize)]
-struct Proxy {
-    token: String,
-    remote: String
-}
+#[tokio::main]
+async fn main() -> Result<(), tokio::io::Error> {
+    let args = Args::parse();
 
+    init_logging(parse_log_level(&args.log_level));
 
-fn validate_token(token: &String, log: &Logger) ->Result<(), StatusCode> {
-    if cfg!(debug_assertions) && token == "testtoken" {
-        return Ok(());
-    }
-
-    if PASETO_SECRET_KEY.is_none() {
-        crit!(log, "PASETO_SECRET_KEY variable is not set, rejecting client!");
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    match PasetoParser::<V4, Local>::default().parse(&token, &PASETO_SECRET_KEY.as_ref().unwrap()) {
-        Ok(_) => Ok(()),
-        Err(_) => Err(StatusCode::UNAUTHORIZED)
-    }
-}
-
-#[debug_handler]
-async fn proxy(query: Query<Proxy>, ws: WebSocketUpgrade, ConnectInfo(addr): ConnectInfo<SocketAddr>, State(log): State<Logger>) -> impl IntoResponse {
-    let log = log.new(o!("client" => addr.to_string()));
-
-    if let Err(err) = validate_token(&query.token, &log) {
-        return Err::<Body, StatusCode>(err).into_response();
-    }
-
-    info!(log, "Incoming WS connection");
-    let fail_log = log.clone();
-    let upgrade_log = log.clone();
-    ws.on_failed_upgrade(move |error: Error| {
-        METRICS.inc_ws_error(metrics::Error::Handshake);
-        error!(fail_log, "Failed to upgrade WebSocket connection"; "error" => error.to_string());
-    }).on_upgrade(move |socket| {
-        async move {
-            Connection::new(query.remote.clone(), upgrade_log).run(socket).await;
-        }
-    })
-}
-
-#[debug_handler]
-async fn dump_metrics() -> impl IntoResponse {
-    METRICS.encode()
+    let listener = TcpListener::bind(format!("{}:{}", args.bind, args.port)).await?;
+    info!(DEFAULT_LOGGER.get().unwrap(), "WS<->TCP Proxy listening on {}:{}", args.bind, args.port);
+    run_proxy(listener).await
 }

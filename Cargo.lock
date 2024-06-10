@@ -1935,6 +1935,7 @@ dependencies = [
  "env_logger",
  "futures-util",
  "lazy_static",
+ "once_cell",
  "prometheus-client",
  "rusty_paseto",
  "serde",
