@@ -1,25 +1,24 @@
-use std::borrow::{Borrow, BorrowMut};
-use slog::Logger;
 use axum::extract::{ws::Message, ws::WebSocket};
+use futures_util::{
+    sink::SinkExt,
+    stream::{SplitSink, SplitStream, StreamExt},
+};
+use slog::Logger;
+use std::borrow::{Borrow, BorrowMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
-use futures_util::{sink::SinkExt, stream::{StreamExt, SplitSink, SplitStream}};
 
 use crate::metrics::{self, ConnectionsLabels};
-use crate::metrics::{METRICS, ScopeDuration, ScopeGauge};
+use crate::metrics::{ScopeDuration, ScopeGauge, METRICS};
 
 pub struct Connection {
     remote: String,
-    log: Logger
+    log: Logger,
 }
 
 impl Connection {
-
     pub fn new(remote: String, log: Logger) -> Self {
-        Connection {
-            remote,
-            log
-        }
+        Connection { remote, log }
     }
 
     async fn send_tcp_message(&self, tcp: &mut WriteHalf<TcpStream>, data: Vec<u8>) {
@@ -37,7 +36,7 @@ impl Connection {
                 match msg {
                     Ok(msg) => {
                         self.send_tcp_message(tcp, msg.into_data()).await;
-                    },
+                    }
                     Err(e) => {
                         METRICS.inc_ws_error(metrics::Error::Read);
                         error!(self.log, "Error reading from websocket"; "error" => e.to_string());
@@ -51,7 +50,11 @@ impl Connection {
         }
     }
 
-    async fn tcp_to_ws(&self, ws: &mut SplitSink<WebSocket, Message>, tcp: &mut ReadHalf<TcpStream>) {
+    async fn tcp_to_ws(
+        &self,
+        ws: &mut SplitSink<WebSocket, Message>,
+        tcp: &mut ReadHalf<TcpStream>,
+    ) {
         let mut buffer = [0; 1024];
         loop {
             trace!(self.log, "Waiting for incoming TCP data");
@@ -59,7 +62,7 @@ impl Connection {
                 Ok(size) => {
                     trace!(self.log, "Received data from TCP upstream"; "bytes" => size);
                     size
-                },
+                }
                 Err(e) => {
                     METRICS.inc_tcp_error(metrics::Error::Read);
                     error!(self.log, "Error reading from upstream TCP"; "error" => e.to_string());
@@ -85,7 +88,12 @@ impl Connection {
     pub async fn run(&mut self, websocket: WebSocket) {
         let _active_conn = ScopeGauge::new(&METRICS.active_connections);
         let duration = ScopeDuration::new(&METRICS.connection_duration);
-        METRICS.connections.get_or_create( &ConnectionsLabels { remote: self.remote.clone() }).inc();
+        METRICS
+            .connections
+            .get_or_create(&ConnectionsLabels {
+                remote: self.remote.clone(),
+            })
+            .inc();
 
         self.log = self.log.new(o!("remote" => self.remote.clone()));
 
@@ -93,7 +101,7 @@ impl Connection {
             Ok(tcp_stream) => {
                 debug!(self.log, "Established TCP connection to upstream");
                 tcp_stream
-            },
+            }
             Err(e) => {
                 METRICS.inc_tcp_error(metrics::Error::Handshake);
                 error!(self.log, "Failed to establish TCP connection to upstream"; "error" => e.to_string());
@@ -124,4 +132,3 @@ impl Connection {
         debug!(self.log, "Conection closed"; "duration_secs" => duration.duration());
     }
 }
-

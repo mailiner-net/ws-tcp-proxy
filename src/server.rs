@@ -28,10 +28,14 @@ struct ProxyQuery {
 #[derive(Clone)]
 struct ServerState {
     log: Logger,
-    secret_key: Option<Arc<PasetoSymmetricKey<V4, Local>>>
+    secret_key: Option<Arc<PasetoSymmetricKey<V4, Local>>>,
 }
 
-fn validate_token(token: &String, secret_key: &Option<Arc<PasetoSymmetricKey<V4, Local>>>, log: &Logger) -> Result<(), StatusCode> {
+fn validate_token(
+    token: &String,
+    secret_key: &Option<Arc<PasetoSymmetricKey<V4, Local>>>,
+    log: &Logger,
+) -> Result<(), StatusCode> {
     if cfg!(debug_assertions) && token == "testtoken" {
         return Ok(());
     }
@@ -85,18 +89,13 @@ pub async fn run_proxy(
     listener: TcpListener,
     secret_key: Option<PasetoSymmetricKey<V4, Local>>,
 ) -> Result<(), Error> {
-
     let state = ServerState {
         log: DEFAULT_LOGGER.get().unwrap().clone(),
-        secret_key: secret_key.map(|key| Arc::new(key))
+        secret_key: secret_key.map(|key| Arc::new(key)),
     };
 
     let app = Router::new()
-        .route(
-            "/proxy",
-            get(proxy_handler)
-                .with_state(state)
-        )
+        .route("/proxy", get(proxy_handler).with_state(state))
         .route("/metrics", get(metrics_handler));
 
     axum::serve(
@@ -167,7 +166,9 @@ mod test {
         }
     }
 
-    async fn create_servers(secret_key: Option<PasetoSymmetricKey<V4, Local>>) -> (u16, TestServer) {
+    async fn create_servers(
+        secret_key: Option<PasetoSymmetricKey<V4, Local>>,
+    ) -> (u16, TestServer) {
         init_logging(slog::Level::Debug);
         let server = TestServer::new().await;
         let listener = TcpListener::bind("0.0.0.0:0")
@@ -286,7 +287,8 @@ mod test {
     #[tokio::test]
     async fn test_invalid_token_returns_unauthorized() {
         let secret = Key::<32>::try_new_random().expect("Failed to generate a new PASETO key");
-        let (proxy_port, server) = create_servers(Some(PasetoSymmetricKey::<V4, Local>::from(secret))).await;
+        let (proxy_port, server) =
+            create_servers(Some(PasetoSymmetricKey::<V4, Local>::from(secret))).await;
 
         let err = Builder::from_uri(
             format!(
@@ -311,10 +313,14 @@ mod test {
     #[tokio::test]
     async fn test_valid_token_passes() {
         let secret = Key::<32>::try_new_random().expect("Failed to generate a new PASETO key");
-        let (proxy_port, server) = create_servers(Some(PasetoSymmetricKey::<V4, Local>::from(secret.clone()))).await;
+        let (proxy_port, server) =
+            create_servers(Some(PasetoSymmetricKey::<V4, Local>::from(secret.clone()))).await;
 
         let key = PasetoSymmetricKey::<V4, Local>::from(secret);
-        let claim = PasetoBuilder::<V4, Local>::default().set_no_expiration_danger_acknowledged().build(&key).expect("Failed to build PASETO claim");
+        let claim = PasetoBuilder::<V4, Local>::default()
+            .set_no_expiration_danger_acknowledged()
+            .build(&key)
+            .expect("Failed to build PASETO claim");
 
         Builder::from_uri(
             format!(

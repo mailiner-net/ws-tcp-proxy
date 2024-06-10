@@ -1,8 +1,8 @@
-use std::str::FromStr;
 use clap::{arg, command, Parser};
-use slog::Logger;
-use rusty_paseto::prelude::*;
 use once_cell::sync::OnceCell;
+use rusty_paseto::prelude::*;
+use slog::Logger;
+use std::str::FromStr;
 use tokio::net::TcpListener;
 
 #[macro_use]
@@ -26,12 +26,11 @@ struct Args {
     bind: String,
 
     #[arg(short = 'l', long, default_value = "info")]
-    log_level: String
+    log_level: String,
 }
 
 fn parse_log_level(val: &str) -> slog::Level {
-    slog::Level::from_str(val)
-        .unwrap_or_else(|_| panic!("Invalid log level {}", val))
+    slog::Level::from_str(val).unwrap_or_else(|_| panic!("Invalid log level {}", val))
 }
 
 static DEFAULT_LOGGER: OnceCell<Logger> = OnceCell::new();
@@ -53,15 +52,18 @@ async fn main() -> Result<(), tokio::io::Error> {
     init_logging(parse_log_level(&args.log_level));
 
     let secret_key = option_env!("MAILINER_PASETO_SECRET").and_then(|key| {
-        Some(PasetoSymmetricKey::<V4, Local>::from(Key::from(key.as_bytes())))
+        Some(PasetoSymmetricKey::<V4, Local>::from(Key::from(
+            key.as_bytes(),
+        )))
     });
     if !cfg!(debug_assertions) && secret_key.is_none() {
         panic!("MAILINER_PASETO_SECRET is not set in production build!");
     }
 
     let listener = TcpListener::bind(format!("{}:{}", args.bind, args.port)).await?;
-    info!(DEFAULT_LOGGER.get().unwrap(), "WS<->TCP Proxy listening on {}:{}", args.bind, args.port);
+    info!(
+        DEFAULT_LOGGER.get().unwrap(),
+        "WS<->TCP Proxy listening on {}:{}", args.bind, args.port
+    );
     run_proxy(listener, secret_key).await
 }
-
-

@@ -1,12 +1,12 @@
-use prometheus_client::encoding::{EncodeLabelSet, EncodeLabelValue};
+use lazy_static::lazy_static;
 use prometheus_client::encoding::text::encode;
+use prometheus_client::encoding::{EncodeLabelSet, EncodeLabelValue};
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::Registry;
 use std::time::Instant;
-use lazy_static::lazy_static;
 
 lazy_static! {
     pub static ref METRICS: Metrics = Metrics::new();
@@ -17,17 +17,17 @@ pub enum Error {
     Handshake,
     Read,
     Send,
-    Shutdown
+    Shutdown,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct ErrorLabels {
-    pub error: Error
+    pub error: Error,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct ConnectionsLabels {
-    pub remote: String
+    pub remote: String,
 }
 
 pub struct Metrics {
@@ -40,11 +40,13 @@ pub struct Metrics {
 
     pub connection_duration: Histogram,
 
-    pub connections: Family<ConnectionsLabels, Counter>
+    pub connections: Family<ConnectionsLabels, Counter>,
 }
 
 // bucket duration in seconds
-static DURATION_BUCKETS: [f64; 12] = [1., 5., 10., 30., 60., 120., 300., 600., 1200., 1800., 2700., 3600.];
+static DURATION_BUCKETS: [f64; 12] = [
+    1., 5., 10., 30., 60., 120., 300., 600., 1200., 1800., 2700., 3600.,
+];
 
 impl Metrics {
     pub fn new() -> Self {
@@ -54,14 +56,34 @@ impl Metrics {
             ws_errors: Family::<ErrorLabels, Counter>::default(),
             tcp_errors: Family::<ErrorLabels, Counter>::default(),
             connection_duration: Histogram::new(DURATION_BUCKETS.into_iter()),
-            connections: Family::<ConnectionsLabels, Counter>::default()
+            connections: Family::<ConnectionsLabels, Counter>::default(),
         };
 
-        metrics.registry.register("active_connections", "Number of currently active collections", metrics.active_connections.clone());
-        metrics.registry.register("ws_errors", "Number of errors that occurred in the WebSocket connection", metrics.ws_errors.clone());
-        metrics.registry.register("tcp_errors", "Number of errors that occurred in the TCP connection", metrics.tcp_errors.clone());
-        metrics.registry.register("connection_duration", "Histogram of connection durations", metrics.connection_duration.clone());
-        metrics.registry.register("connections", "Number of connections to remotes", metrics.connections.clone());
+        metrics.registry.register(
+            "active_connections",
+            "Number of currently active collections",
+            metrics.active_connections.clone(),
+        );
+        metrics.registry.register(
+            "ws_errors",
+            "Number of errors that occurred in the WebSocket connection",
+            metrics.ws_errors.clone(),
+        );
+        metrics.registry.register(
+            "tcp_errors",
+            "Number of errors that occurred in the TCP connection",
+            metrics.tcp_errors.clone(),
+        );
+        metrics.registry.register(
+            "connection_duration",
+            "Histogram of connection durations",
+            metrics.connection_duration.clone(),
+        );
+        metrics.registry.register(
+            "connections",
+            "Number of connections to remotes",
+            metrics.connections.clone(),
+        );
 
         metrics
     }
@@ -86,10 +108,10 @@ pub struct ScopeGauge {
 }
 
 impl ScopeGauge {
-   pub fn new(gauge: &'static Gauge) -> Self {
-       gauge.inc();
-       ScopeGauge { gauge }
-   }
+    pub fn new(gauge: &'static Gauge) -> Self {
+        gauge.inc();
+        ScopeGauge { gauge }
+    }
 }
 
 impl Drop for ScopeGauge {
@@ -100,12 +122,15 @@ impl Drop for ScopeGauge {
 
 pub struct ScopeDuration {
     histogram: &'static Histogram,
-    start: Instant
+    start: Instant,
 }
 
 impl ScopeDuration {
     pub fn new(histogram: &'static Histogram) -> Self {
-        ScopeDuration { histogram, start: Instant::now() }
+        ScopeDuration {
+            histogram,
+            start: Instant::now(),
+        }
     }
 
     pub fn duration(&self) -> f64 {
