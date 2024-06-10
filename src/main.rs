@@ -1,19 +1,17 @@
 use clap::{arg, command, Parser};
-use once_cell::sync::OnceCell;
 use rusty_paseto::prelude::*;
-use slog::Logger;
-use std::str::FromStr;
 use tokio::net::TcpListener;
 
-#[macro_use]
-extern crate slog;
-extern crate slog_term;
-use slog::Drain;
-
+mod logging;
 mod connection;
 mod metrics;
 mod server;
 
+#[macro_use]
+extern crate slog;
+extern crate slog_term;
+
+use logging::{DEFAULT_LOGGER, parse_log_level, init_logging};
 use server::run_proxy;
 
 #[derive(Parser, Debug)]
@@ -27,22 +25,6 @@ struct Args {
 
     #[arg(short = 'l', long, default_value = "info")]
     log_level: String,
-}
-
-fn parse_log_level(val: &str) -> slog::Level {
-    slog::Level::from_str(val).unwrap_or_else(|_| panic!("Invalid log level {}", val))
-}
-
-static DEFAULT_LOGGER: OnceCell<Logger> = OnceCell::new();
-
-fn init_logging(level: slog::Level) {
-    DEFAULT_LOGGER.get_or_init(|| {
-        let decorator = slog_term::TermDecorator::new().build();
-        let drain = slog_term::FullFormat::new(decorator).build().fuse();
-        let drain = slog_async::Async::new(drain).build().fuse();
-        let drain = slog::LevelFilter::new(drain, level).fuse();
-        slog::Logger::root(drain, o!())
-    });
 }
 
 #[tokio::main]
