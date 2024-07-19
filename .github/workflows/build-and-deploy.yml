@@ -27,7 +27,7 @@ jobs:
           with:
             context: ${{ vars.code_directory }}
             push: true
-            tags: gcr.io/mailiner-net/ws-tcp-proxy:${{ inputs.ref }}
+            tags: gcr.io/mailiner-net/ws-tcp-proxy:${{ env.GITHUB_SHA }}
 
         - name: Deploy to Cloud Run
           id: deploy
@@ -38,7 +38,7 @@ jobs:
             region: ${{ vars.GCP_REGION }}
             secrets: |
                 MAILINER_PASETO_SECRET=MAILINER_PASETO_SECRET
-            image: gcr.io/mailiner-net/ws-tcp-proxy:${{ inputs.ref }}
+            image: gcr.io/mailiner-net/ws-tcp-proxy:${{ env.GITHUB_SHA }}
 
         - name: Update DNS
           run: |
