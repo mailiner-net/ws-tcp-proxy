@@ -50,7 +50,10 @@ fn validate_token(
 
     match PasetoParser::<V4, Local>::default().parse(&token, &secret_key.as_ref().unwrap()) {
         Ok(_) => Ok(()),
-        Err(_) => Err(StatusCode::UNAUTHORIZED),
+        Err(e) => {
+            debug!(log, "Failed to parse PASETO token"; "error" => e.to_string());
+            Err(StatusCode::UNAUTHORIZED)
+        }
     }
 }
 
