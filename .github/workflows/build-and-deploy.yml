@@ -51,19 +51,3 @@ jobs:
             secrets: |
                 MAILINER_PASETO_SECRET=MAILINER_PASETO_SECRET:latest
             image: ${{ vars.GCP_REGION }}-docker.pkg.dev/mailiner/mailiner/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
-
-        - name: Update DNS
-          run: |
-            curl --request PUT \
-                 --url https://api.cloudflare.com/client/v4/zones/${{ secrets.CF_DNS_ZONE_ID }}/dns_records/${{ secrets.CF_DNS_RECORD_ID }}\
-                 --header 'Content-Type: application/json' \
-                 --header 'X-Auth-Email: ${{ secrets.CLOUDFLARE_EMAIL }}' \
-                 --header 'X-Auth-Key: ${{ secrets.CLOUDFLARE_TOKEN }}' \
-                 --data '{
-                    "content": "${{ steps.deploy.outputs.url }}",
-                    "name": "proxy.mailiner.net",
-                    "proxied": false,
-                    "type": "CNAME",
-                    "ttl": 600,
-                    "id": ${{ secrets.CF_DNS_RECORD_ID }}
-                 }'
