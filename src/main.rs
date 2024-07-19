@@ -2,8 +2,8 @@ use clap::{arg, command, Parser};
 use rusty_paseto::prelude::*;
 use tokio::net::TcpListener;
 
-mod logging;
 mod connection;
+mod logging;
 mod metrics;
 mod server;
 
@@ -11,7 +11,7 @@ mod server;
 extern crate slog;
 extern crate slog_term;
 
-use logging::{DEFAULT_LOGGER, parse_log_level, init_logging};
+use logging::{init_logging, parse_log_level, DEFAULT_LOGGER};
 use server::run_proxy;
 
 #[derive(Parser, Debug)]
@@ -33,11 +33,13 @@ async fn main() -> Result<(), tokio::io::Error> {
 
     init_logging(parse_log_level(&args.log_level));
 
-    let secret_key = option_env!("MAILINER_PASETO_SECRET").and_then(|key| {
-        Some(PasetoSymmetricKey::<V4, Local>::from(Key::from(
-            key.as_bytes(),
-        )))
-    });
+    let secret_key = std::env::var("MAILINER_PASETO_SECRET")
+        .ok()
+        .and_then(|key| {
+            Some(PasetoSymmetricKey::<V4, Local>::from(Key::from(
+                key.as_bytes(),
+            )))
+        });
 
     if secret_key.is_none() {
         if cfg!(debug_assertions) {
