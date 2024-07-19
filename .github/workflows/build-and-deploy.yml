@@ -9,17 +9,17 @@ jobs:
 
         steps:
         - name: Checkout
-          uses: actions/checkout@v3
+          uses: actions/checkout@v4
         - name: Google Auth
           id: auth
-          uses: 'google-github-actions/auth@v0'
+          uses: 'google-github-actions/auth@v2'
           with:
             token_format: 'access_token'
             workload_identity_provider: '${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}'
             service_account: '${{ secrets.SERVICE_ACCOUNT_EMAIL }}'
         - name: Build, tag and push container
           id: build-image
-          uses: docker/build-push-action@v3
+          uses: docker/build-push-action@v6
           with:
             context: ${{ vars.code_directory }}
             push: true
@@ -27,7 +27,7 @@ jobs:
 
         - name: Deploy to Cloud Run
           id: deploy
-          uses: google-github-actions/deploy-cloudrun@v0
+          uses: google-github-actions/deploy-cloudrun@v2
           with:
             project_id: ${{ vars.GCP_PROJECT_ID }}
             service: ${{ vars.GCP_SERVICE_NAME }}
