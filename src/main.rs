@@ -32,6 +32,7 @@ async fn main() -> Result<(), tokio::io::Error> {
     let args = Args::parse();
 
     init_logging(parse_log_level(&args.log_level));
+    info!(DEFAULT_LOGGER.get().unwrap(), "Log level set to {}", args.log_level);
 
     let secret_key = std::env::var("MAILINER_PASETO_SECRET")
         .ok()
