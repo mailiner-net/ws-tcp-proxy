@@ -39,18 +39,17 @@ async fn main() -> Result<(), tokio::io::Error> {
             Some(PasetoSymmetricKey::<V4, Local>::from(Key::from(
                 key.as_bytes(),
             )))
+        }).or_else(|| {
+            if cfg!(debug_assertions) {
+                warn!(
+                    DEFAULT_LOGGER.get().unwrap(),
+                    "MAILINER_PASETO_SECRET is not set, using insecure secret key!"
+                );
+            } else {
+                panic!("MAILINER_PASETO_SECRET is not set in production build!");
+            }
+            None
         });
-
-    if secret_key.is_none() {
-        if cfg!(debug_assertions) {
-            warn!(
-                DEFAULT_LOGGER.get().unwrap(),
-                "MAILINER_PASETO_SECRET is not set, using insecure secret key!"
-            );
-        } else {
-            panic!("MAILINER_PASETO_SECRET is not set in production build!");
-        }
-    }
 
     let listener = TcpListener::bind(format!("{}:{}", args.bind, args.port)).await?;
     info!(
