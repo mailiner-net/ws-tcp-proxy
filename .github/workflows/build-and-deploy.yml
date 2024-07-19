@@ -42,7 +42,7 @@ jobs:
             region: ${{ vars.GCP_REGION }}
             secrets: |
                 MAILINER_PASETO_SECRET=MAILINER_PASETO_SECRET
-            image: gcr.io/mailiner-net/ws-tcp-proxy:${{ seps.vars.outputs.sha_short }}
+            image: gcr.io/mailiner-net/ws-tcp-proxy:${{ steps.vars.outputs.sha_short }}
 
         - name: Update DNS
           run: |
