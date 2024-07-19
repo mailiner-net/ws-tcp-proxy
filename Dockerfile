@@ -11,5 +11,6 @@ FROM debian:bookworm-slim
 COPY --from=builder /usr/local/cargo/bin/ws-tcp-proxy /usr/local/bin/ws-tcp-proxy
 
 ENV PORT=9400
+ENV LOG_LEVEL=info
 
-CMD [ "sh", "-c", "ws-tcp-proxy --port ${PORT}" ]
+CMD [ "sh", "-c", "ws-tcp-proxy --port ${PORT} -l ${LOG_LEVEL}" ]
