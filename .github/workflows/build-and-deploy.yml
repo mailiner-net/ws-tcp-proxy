@@ -38,8 +38,6 @@ jobs:
           with:
             context: ${{ vars.code_directory }}
             push: true
-            build-args:
-              BUILD_MODE="--release"
             tags:
                 ${{ vars.GCP_REGION }}-docker.pkg.dev/mailiner/mailiner/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
 

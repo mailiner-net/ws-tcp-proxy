@@ -1,10 +1,8 @@
 FROM rust:1.79 AS builder
-ARG BUILD_MODE
 
 WORKDIR /usr/src/ws-tcp-proxy
 COPY . .
 
-RUN cargo build $BUILD_MODE
 RUN cargo install --path .
 
 
