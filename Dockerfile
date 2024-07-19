@@ -13,4 +13,4 @@ COPY --from=builder /usr/local/cargo/bin/ws-tcp-proxy /usr/local/bin/ws-tcp-prox
 ENV MAILINER_PASETO_SECRET=
 ENV PORT=9400
 
-CMD [ "sh", "-c", "ws-tcp-proxy --port ${PORT}" ]
+CMD [ "sh", "-c", "MAILINER_PASETO_SECRET=${MAILINER_PASETO_SECRET} ws-tcp-proxy --port ${PORT}" ]
