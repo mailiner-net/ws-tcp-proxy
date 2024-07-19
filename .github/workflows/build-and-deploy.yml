@@ -50,8 +50,6 @@ jobs:
             region: ${{ vars.GCP_REGION }}
             secrets: |
                 MAILINER_PASETO_SECRET=MAILINER_PASETO_SECRET:latest
-            env_vars: |
-                PORT=8080
             image: ${{ vars.GCP_REGION }}-docker.pkg.dev/mailiner/mailiner/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
 
         - name: Update DNS
