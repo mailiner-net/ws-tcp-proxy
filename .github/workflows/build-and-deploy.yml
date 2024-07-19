@@ -49,7 +49,7 @@ jobs:
             service: ${{ vars.GCP_SERVICE_NAME }}
             region: ${{ vars.GCP_REGION }}
             secrets: |
-                MAILINER_PASETO_SECRET=MAILINER_PASETO_SECRET
+                MAILINER_PASETO_SECRET=MAILINER_PASETO_SECRET:latest
             image: ${{ vars.GCP_REGION }}-docker.pkg.dev/mailiner/mailiner/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
 
         - name: Update DNS
