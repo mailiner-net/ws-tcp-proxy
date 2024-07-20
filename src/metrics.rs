@@ -18,6 +18,7 @@ pub enum Error {
     Read,
     Send,
     Shutdown,
+    Timeout
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
@@ -89,6 +90,10 @@ impl Metrics {
     }
 
     pub fn inc_tcp_error(&self, error: Error) {
+        self.tcp_errors.get_or_create(&ErrorLabels { error }).inc();
+    }
+
+    pub fn inc_tcp_timeout(&self, error: Error) {
         self.tcp_errors.get_or_create(&ErrorLabels { error }).inc();
     }
 

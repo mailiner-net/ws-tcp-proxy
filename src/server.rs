@@ -14,6 +14,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, Router};
 
+use crate::config::Config;
 use crate::connection::Connection;
 use crate::metrics;
 use crate::metrics::METRICS;
@@ -28,12 +29,12 @@ struct ProxyQuery {
 #[derive(Clone)]
 struct ServerState {
     log: Logger,
-    secret_key: Option<Arc<PasetoSymmetricKey<V4, Local>>>,
+    config: Arc<Config>,
 }
 
 fn validate_token(
     query: &ProxyQuery,
-    secret_key: &Option<Arc<PasetoSymmetricKey<V4, Local>>>,
+    secret_key: &Option<PasetoSymmetricKey<V4, Local>>,
     log: &Logger,
 ) -> Result<(), StatusCode> {
     if cfg!(debug_assertions) && query.token == "testtoken" {
@@ -82,7 +83,7 @@ async fn proxy_handler(
 ) -> impl IntoResponse {
     let log = state.log.new(o!("client" => addr.to_string()));
 
-    if let Err(err) = validate_token(&query, &state.secret_key, &log) {
+    if let Err(err) = validate_token(&query, &state.config.secret_key, &log) {
         return Err::<Body, StatusCode>(err).into_response();
     }
 
@@ -94,7 +95,7 @@ async fn proxy_handler(
         error!(fail_log, "Failed to upgrade WebSocket connection"; "error" => error.to_string());
     })
     .on_upgrade(move |socket| async move {
-        Connection::new(query.remote.clone(), upgrade_log)
+        Connection::new(query.remote.clone(), upgrade_log, state.config)
             .run(socket)
             .await;
     })
@@ -107,11 +108,11 @@ async fn metrics_handler() -> impl IntoResponse {
 
 pub async fn run_proxy(
     listener: TcpListener,
-    secret_key: Option<PasetoSymmetricKey<V4, Local>>,
+    config: Config,
 ) -> Result<(), Error> {
     let state = ServerState {
         log: DEFAULT_LOGGER.get().unwrap().clone(),
-        secret_key: secret_key.map(|key| Arc::new(key)),
+        config: Arc::new(config)
     };
 
     let app = Router::new()
@@ -135,6 +136,7 @@ mod test {
     use tokio_websockets::client::Builder;
     use tokio_websockets::{upgrade, Message};
 
+    use crate::config::Config;
     use crate::init_logging;
 
     use super::run_proxy;
@@ -185,13 +187,16 @@ mod test {
         secret_key: Option<PasetoSymmetricKey<V4, Local>>,
     ) -> (u16, TestServer) {
         init_logging(slog::Level::Debug);
+        let config = Config {
+            secret_key, ..Default::default()
+        };
         let server = TestServer::new().await;
         let listener = TcpListener::bind("0.0.0.0:0")
             .await
             .expect("Failed to bind proxy");
         let proxy_port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
-            let _ = run_proxy(listener, secret_key).await;
+            let _ = run_proxy(listener, config).await;
         });
 
         (proxy_port, server)
