@@ -32,11 +32,11 @@ struct ServerState {
 }
 
 fn validate_token(
-    token: &String,
+    query: &ProxyQuery,
     secret_key: &Option<Arc<PasetoSymmetricKey<V4, Local>>>,
     log: &Logger,
 ) -> Result<(), StatusCode> {
-    if cfg!(debug_assertions) && token == "testtoken" {
+    if cfg!(debug_assertions) && query.token == "testtoken" {
         return Ok(());
     }
 
@@ -48,13 +48,30 @@ fn validate_token(
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    match PasetoParser::<V4, Local>::default().parse(&token, &secret_key.as_ref().unwrap()) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            debug!(log, "Failed to parse PASETO token"; "error" => e.to_string());
-            Err(StatusCode::UNAUTHORIZED)
-        }
-    }
+    PasetoParser::<V4, Local>::default()
+        .validate_claim(ExpirationClaim::default(), &|_, value| {
+            let val = value.as_str().unwrap_or_default();
+            // Don't permit non-expiring tokens
+            if val.is_empty() {
+                return Err(PasetoClaimError::Expired);
+            }
+
+            let datetime = chrono::DateTime::parse_from_rfc3339(val).map_err(|_| PasetoClaimError::RFC3339Date(val.to_string()))?;
+            let now = chrono::Utc::now();
+
+            if datetime <= now {
+                Err(PasetoClaimError::Expired)
+            } else {
+                Ok(())
+            }
+        } )
+        .check_claim(
+            CustomClaim::try_from(("remote", query.remote.clone()))
+                .map_err(|_| StatusCode::UNAUTHORIZED)?,
+        )
+        .parse(&query.token, &secret_key.as_ref().unwrap())
+        .map(|_| ())
+        .map_err(|_| StatusCode::UNAUTHORIZED)
 }
 
 async fn proxy_handler(
@@ -65,7 +82,7 @@ async fn proxy_handler(
 ) -> impl IntoResponse {
     let log = state.log.new(o!("client" => addr.to_string()));
 
-    if let Err(err) = validate_token(&query.token, &state.secret_key, &log) {
+    if let Err(err) = validate_token(&query, &state.secret_key, &log) {
         return Err::<Body, StatusCode>(err).into_response();
     }
 
@@ -220,7 +237,7 @@ mod test {
         let err = Builder::from_uri(
             format!("ws://127.0.0.1:{}/proxy?token=testtoken", proxy_port)
                 .parse()
-                .unwrap(),
+                .expect("Fialed to build URI"),
         )
         .connect()
         .await
@@ -244,7 +261,7 @@ mod test {
                 proxy_port, server.port
             )
             .parse()
-            .unwrap(),
+            .expect("Failed to build URI"),
         )
         .connect()
         .await
@@ -268,7 +285,7 @@ mod test {
                 proxy_port, server.port
             )
             .parse()
-            .unwrap(),
+            .expect("Failed to build URI"),
         )
         .connect()
         .await
@@ -294,7 +311,7 @@ mod test {
                 proxy_port, server.port
             )
             .parse()
-            .unwrap(),
+            .expect("Failed to build URI"),
         )
         .connect()
         .await
@@ -309,14 +326,22 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_valid_token_passes() {
+    async fn test_expired_token_returns_unauthorized() {
         let secret = Key::<32>::try_new_random().expect("Failed to generate a new PASETO key");
         let (proxy_port, server) =
             create_servers(Some(PasetoSymmetricKey::<V4, Local>::from(secret.clone()))).await;
 
+        let hour_ago = chrono::Utc::now() - chrono::Duration::hours(1);
         let key = PasetoSymmetricKey::<V4, Local>::from(secret);
         let claim = PasetoBuilder::<V4, Local>::default()
-            .set_no_expiration_danger_acknowledged()
+            .set_claim(
+                ExpirationClaim::try_from(hour_ago.to_rfc3339())
+                    .expect("Failed to parse expire claim"),
+            )
+            .set_claim(
+                CustomClaim::try_from(("remote", format!("127.0.0.1:{}", server.port)))
+                    .expect("Failed to parse remote claim"),
+            )
             .build(&key)
             .expect("Failed to build PASETO claim");
 
@@ -326,7 +351,64 @@ mod test {
                 proxy_port, server.port, claim
             )
             .parse()
-            .unwrap(),
+            .expect("Failed to build URI"),
+        )
+        .connect()
+        .await
+        .expect_err("Connected successfully despite expired token");
+    }
+
+    #[tokio::test]
+    async fn test_token_with_wrong_remote_claim_returns_unauthorized() {
+        let secret = Key::try_new_random().expect("Failed to generate a new PASETO key");
+        let (proxy_port, server) =
+            create_servers(Some(PasetoSymmetricKey::<V4, Local>::from(secret.clone()))).await;
+
+        let key = PasetoSymmetricKey::<V4, Local>::from(secret);
+        let claim = PasetoBuilder::<V4, Local>::default()
+            .set_claim(
+                CustomClaim::try_from(("remote", "blablabla"))
+                    .expect("Failed to parse remote claim"),
+            )
+            .build(&key)
+            .expect("Failed to build PASETO claim");
+
+        Builder::from_uri(
+            format!(
+                "ws://127.0.0.1:{}/proxy?remote=127.0.0.1:{}&token={}",
+                proxy_port, server.port, claim
+            )
+            .parse()
+            .expect("Failed to build URI"),
+        )
+        .connect()
+        .await
+        .expect_err("Connected successfully despite invalid remote claim");
+    }
+
+    #[tokio::test]
+    async fn test_valid_token_passes() {
+        let secret = Key::<32>::try_new_random().expect("Failed to generate a new PASETO key");
+        let (proxy_port, server) =
+            create_servers(Some(PasetoSymmetricKey::<V4, Local>::from(secret.clone()))).await;
+
+        let key = PasetoSymmetricKey::<V4, Local>::from(secret);
+        // Claims expire in one hour by default, which is good enough for this test
+        let claim = PasetoBuilder::<V4, Local>::default()
+            .set_claim(
+                CustomClaim::try_from(("remote", format!("127.0.0.1:{}", server.port)))
+                    .expect("Failed to parse remove claim"),
+            )
+            .build(&key)
+            .expect("Failed to build PASETO claim");
+
+        Builder::from_uri(
+            format!(
+                "ws://127.0.0.1:{}/proxy?remote=127.0.0.1:{}&token={}",
+                proxy_port, server.port, claim
+            )
+            .parse()
+            .expect("Failed to build URI"),
         )
         .connect()
         .await
