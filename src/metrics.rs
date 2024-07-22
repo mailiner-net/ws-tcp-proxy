@@ -6,7 +6,7 @@ use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::Registry;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 lazy_static! {
     pub static ref METRICS: Metrics = Metrics::new();
@@ -42,6 +42,8 @@ pub struct Metrics {
     pub connection_duration: Histogram,
 
     pub connections: Family<ConnectionsLabels, Counter>,
+
+    process_start_time_seconds: Gauge
 }
 
 // bucket duration in seconds
@@ -58,6 +60,8 @@ impl Metrics {
             tcp_errors: Family::<ErrorLabels, Counter>::default(),
             connection_duration: Histogram::new(DURATION_BUCKETS.into_iter()),
             connections: Family::<ConnectionsLabels, Counter>::default(),
+
+            process_start_time_seconds: Gauge::default(),
         };
 
         metrics.registry.register(
@@ -85,6 +89,17 @@ impl Metrics {
             "Number of connections to remotes",
             metrics.connections.clone(),
         );
+        metrics.registry.register(
+            "process_start_time_seconds",
+            "Start time of the process since unix epoch in seconds",
+            metrics.process_start_time_seconds.clone(),
+        );
+
+        // One of the Prometheus deafult "process" metrics, this one is required by the
+        // Prometheus sidecar in GCP
+        let now = SystemTime::now();
+        let since_epoch = now.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+        metrics.process_start_time_seconds.set(since_epoch.as_secs() as i64);
 
         metrics
     }
