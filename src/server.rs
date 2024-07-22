@@ -102,7 +102,8 @@ async fn proxy_handler(
 }
 
 #[debug_handler]
-async fn metrics_handler() -> impl IntoResponse {
+async fn metrics_handler(State(state): State<ServerState>) -> impl IntoResponse {
+    info!(state.log, "Serving metrics");
     METRICS.encode()
 }
 
@@ -116,8 +117,8 @@ pub async fn run_proxy(
     };
 
     let app = Router::new()
-        .route("/proxy", get(proxy_handler).with_state(state))
-        .route("/metrics", get(metrics_handler));
+        .route("/proxy", get(proxy_handler).with_state(state.clone()))
+        .route("/metrics", get(metrics_handler).with_state(state));
 
     axum::serve(
         listener,
