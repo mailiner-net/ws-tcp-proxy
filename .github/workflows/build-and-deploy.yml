@@ -41,15 +41,15 @@ jobs:
             tags:
                 ${{ vars.GCP_REGION }}-docker.pkg.dev/mailiner/mailiner/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
 
-        - name: Deploy to Cloud Run
-          id: deploy
-          uses: google-github-actions/deploy-cloudrun@v2
-          with:
-            project_id: ${{ vars.GCP_PROJECT_ID }}
-            service: ${{ vars.GCP_SERVICE_NAME }}
-            region: ${{ vars.GCP_REGION }}
-            secrets: |
-                MAILINER_PASETO_SECRET=MAILINER_PASETO_SECRET:latest
-            env_vars: |
-                LOG_LEVEL=debug
-            image: ${{ vars.GCP_REGION }}-docker.pkg.dev/mailiner/mailiner/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
+        #- name: Deploy to Cloud Run
+        #  id: deploy
+        #  uses: google-github-actions/deploy-cloudrun@v2
+        #  with:
+        #    project_id: ${{ vars.GCP_PROJECT_ID }}
+        #    service: ${{ vars.GCP_SERVICE_NAME }}
+        #    region: ${{ vars.GCP_REGION }}
+        #    secrets: |
+        #        MAILINER_PASETO_SECRET=MAILINER_PASETO_SECRET:latest
+        #    env_vars: |
+        #        LOG_LEVEL=debug
+        #    image: ${{ vars.GCP_REGION }}-docker.pkg.dev/mailiner/mailiner/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
