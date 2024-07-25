@@ -14,8 +14,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, Router};
 
-use tower_http::validate_request::ValidateRequestHeaderLayer;
-
 use crate::config::Config;
 use crate::connection::Connection;
 use crate::metrics;
@@ -102,12 +100,21 @@ async fn proxy_handler(
     })
 }
 
-
+#[derive(Deserialize)]
+struct MetricsQuery {
+    token: Option<String>
+}
 
 #[debug_handler]
-async fn metrics_handler(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+async fn metrics_handler(State(state): State<Arc<ServerState>>, Query(query): Query<MetricsQuery>) -> impl IntoResponse {
+    if let Some(metrics_auth_key) = state.config.metrics_auth_key.as_ref() {
+        if query.token.as_deref() != Some(metrics_auth_key) {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
+    }
+
     info!(state.log, "Serving metrics");
-    METRICS.encode()
+    (StatusCode::OK, METRICS.encode()).into_response()
 }
 
 pub async fn run_proxy(
@@ -119,15 +126,9 @@ pub async fn run_proxy(
         config: Arc::new(config)
     });
 
-    let mut metrics_endpoint = get(metrics_handler).with_state(Arc::clone(&state));
-    if let Some(metrics_auth_key) = state.config.metrics_auth_key.as_ref() {
-        let auth_layer = ValidateRequestHeaderLayer::bearer(&metrics_auth_key);
-        metrics_endpoint = metrics_endpoint.layer(auth_layer);
-    }
-
     let app = Router::new()
         .route("/proxy", get(proxy_handler).with_state(Arc::clone(&state)))
-        .route("/metrics", metrics_endpoint);
+        .route("/metrics", get(metrics_handler).with_state(Arc::clone(&state)));
 
     axum::serve(
         listener,

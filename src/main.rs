@@ -16,6 +16,9 @@ extern crate slog_term;
 use logging::{init_logging, parse_log_level, DEFAULT_LOGGER};
 use server::run_proxy;
 
+const MAILINER_PASETO_SECRET: &str = "MAILINER_PASETO_SECRET";
+const METRICS_AUTH_TOKEN: &str = "METRICS_AUTH_TOKEN";
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -30,7 +33,7 @@ struct Args {
 }
 
 fn parse_secret_key() -> Option<PasetoSymmetricKey<V4, Local>> {
-    std::env::var("MAILINER_PASETO_SECRET")
+    std::env::var(MAILINER_PASETO_SECRET)
         .ok()
         .and_then(|key| {
             Some(PasetoSymmetricKey::<V4, Local>::from(Key::from(
@@ -40,26 +43,26 @@ fn parse_secret_key() -> Option<PasetoSymmetricKey<V4, Local>> {
             if cfg!(debug_assertions) {
                 warn!(
                     DEFAULT_LOGGER.get().unwrap(),
-                    "MAILINER_PASETO_SECRET is not set, using insecure secret key!"
+                    "{} is not set, using insecure secret key!", MAILINER_PASETO_SECRET
                 );
             } else {
-                panic!("MAILINER_PASETO_SECRET is not set in production build!");
+                panic!("{} is not set in production build!", MAILINER_PASETO_SECRET);
             }
             None
         })
 }
 
 fn parse_metrics_auth_key() -> Option<String> {
-    std::env::var("METRICS_AUTH_BEARER")
+    std::env::var(METRICS_AUTH_TOKEN)
         .ok()
         .or_else(|| {
             if cfg!(debug_assertions) {
                 warn!(
                     DEFAULT_LOGGER.get().unwrap(),
-                    "METRICS_AUTH_BEARER is not set, metrics will be public!"
+                    "{} is not set, metrics will be public!", METRICS_AUTH_TOKEN
                 );
             } else {
-                panic!("METRICS_AUTH_BEARER is not set in production build!");
+                panic!("{} is not set in production build!", METRICS_AUTH_TOKEN);
             }
             None
         })
