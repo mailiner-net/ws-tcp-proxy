@@ -14,6 +14,8 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, Router};
 
+use tower_http::validate_request::ValidateRequestHeaderLayer;
+
 use crate::config::Config;
 use crate::connection::Connection;
 use crate::metrics;
@@ -26,7 +28,6 @@ struct ProxyQuery {
     remote: String,
 }
 
-#[derive(Clone)]
 struct ServerState {
     log: Logger,
     config: Arc<Config>,
@@ -79,7 +80,7 @@ async fn proxy_handler(
     query: Query<ProxyQuery>,
     ws: WebSocketUpgrade,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    State(state): State<ServerState>,
+    State(state): State<Arc<ServerState>>,
 ) -> impl IntoResponse {
     let log = state.log.new(o!("client" => addr.to_string()));
 
@@ -95,14 +96,16 @@ async fn proxy_handler(
         error!(fail_log, "Failed to upgrade WebSocket connection"; "error" => error.to_string());
     })
     .on_upgrade(move |socket| async move {
-        Connection::new(query.remote.clone(), upgrade_log, state.config)
+        Connection::new(query.remote.clone(), upgrade_log, Arc::clone(&state.config))
             .run(socket)
             .await;
     })
 }
 
+
+
 #[debug_handler]
-async fn metrics_handler(State(state): State<ServerState>) -> impl IntoResponse {
+async fn metrics_handler(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
     info!(state.log, "Serving metrics");
     METRICS.encode()
 }
@@ -111,14 +114,20 @@ pub async fn run_proxy(
     listener: TcpListener,
     config: Config,
 ) -> Result<(), Error> {
-    let state = ServerState {
+    let state = Arc::new(ServerState {
         log: DEFAULT_LOGGER.get().unwrap().clone(),
         config: Arc::new(config)
-    };
+    });
+
+    let mut metrics_endpoint = get(metrics_handler).with_state(Arc::clone(&state));
+    if let Some(metrics_auth_key) = state.config.metrics_auth_key.as_ref() {
+        let auth_layer = ValidateRequestHeaderLayer::bearer(&metrics_auth_key);
+        metrics_endpoint = metrics_endpoint.layer(auth_layer);
+    }
 
     let app = Router::new()
-        .route("/proxy", get(proxy_handler).with_state(state.clone()))
-        .route("/metrics", get(metrics_handler).with_state(state));
+        .route("/proxy", get(proxy_handler).with_state(Arc::clone(&state)))
+        .route("/metrics", metrics_endpoint);
 
     axum::serve(
         listener,

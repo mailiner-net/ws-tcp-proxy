@@ -49,6 +49,22 @@ fn parse_secret_key() -> Option<PasetoSymmetricKey<V4, Local>> {
         })
 }
 
+fn parse_metrics_auth_key() -> Option<String> {
+    std::env::var("METRICS_AUTH_BEARER")
+        .ok()
+        .or_else(|| {
+            if cfg!(debug_assertions) {
+                warn!(
+                    DEFAULT_LOGGER.get().unwrap(),
+                    "METRICS_AUTH_BEARER is not set, metrics will be public!"
+                );
+            } else {
+                panic!("METRICS_AUTH_BEARER is not set in production build!");
+            }
+            None
+        })
+}
+
 #[tokio::main]
 async fn main() -> Result<(), tokio::io::Error> {
     let args = Args::parse();
@@ -60,6 +76,7 @@ async fn main() -> Result<(), tokio::io::Error> {
         bind_addr: args.bind,
         listen_port: args.port,
         secret_key: parse_secret_key(),
+        metrics_auth_key: parse_metrics_auth_key(),
         .. Config::default()
     };
 
