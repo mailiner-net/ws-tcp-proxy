@@ -197,10 +197,15 @@ mod test {
     async fn create_servers(
         secret_key: Option<PasetoSymmetricKey<V4, Local>>,
     ) -> (u16, TestServer) {
+        create_servers_with_config(Config {
+            secret_key,
+            ..Default::default()
+        })
+        .await
+    }
+
+    async fn create_servers_with_config(config: Config) -> (u16, TestServer) {
         init_logging(slog::Level::Debug);
-        let config = Config {
-            secret_key, ..Default::default()
-        };
         let server = TestServer::new().await;
         let listener = TcpListener::bind("0.0.0.0:0")
             .await
@@ -400,6 +405,62 @@ mod test {
         .connect()
         .await
         .expect_err("Connected successfully despite invalid remote claim");
+    }
+
+    /// Idle IMAP-like sessions must not be dropped: after the idle timeout the
+    /// proxy sends a WebSocket ping instead of closing, so traffic still works.
+    #[tokio::test]
+    async fn test_idle_connection_survives_keepalive() {
+        use std::time::Duration;
+
+        let (proxy_port, server) = create_servers_with_config(Config {
+            ws_idle_timeout: Duration::from_millis(100),
+            ..Default::default()
+        })
+        .await;
+
+        let (mut client, _) = Builder::from_uri(
+            format!(
+                "ws://127.0.0.1:{}/proxy?remote=127.0.0.1:{}&token=testtoken",
+                proxy_port, server.port
+            )
+            .parse()
+            .unwrap(),
+        )
+        .connect()
+        .await
+        .expect("Failed to connect to WebSocket");
+
+        // Wait well past several idle intervals; previously this would have
+        // closed the connection with "WS read timed out".
+        tokio::time::sleep(Duration::from_millis(350)).await;
+
+        let msg = Message::binary("still-alive".as_bytes());
+        client
+            .send(msg.clone())
+            .await
+            .expect("Failed to send after idle period");
+
+        // Skip any control frames that may have been queued while idle.
+        let resp = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let frame = client
+                    .next()
+                    .await
+                    .expect("Connection closed during idle")
+                    .expect("Failed to receive after idle period");
+                if frame.is_binary() || frame.is_text() {
+                    break frame;
+                }
+            }
+        })
+        .await
+        .expect("Timed out waiting for echo after idle");
+
+        assert_eq!(
+            bytes::Bytes::from(resp.into_payload()),
+            bytes::Bytes::from(msg.into_payload())
+        );
     }
 
     #[tokio::test]
