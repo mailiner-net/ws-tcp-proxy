@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use rusty_paseto::prelude::*;
@@ -10,18 +10,21 @@ use tokio::net::TcpListener;
 use axum::body::Body;
 use axum::debug_handler;
 use axum::extract::{ConnectInfo, Query, State, WebSocketUpgrade};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, Router};
 
-use crate::config::Config;
+use crate::config::{AuthMode, Config};
 use crate::connection::Connection;
+use crate::dest::{self, DestError};
+use crate::limits::{LimitError, LimitState};
 use crate::metrics;
-use crate::metrics::METRICS;
+use crate::metrics::{RejectReason, METRICS};
 use crate::DEFAULT_LOGGER;
 
 #[derive(Deserialize)]
 struct ProxyQuery {
+    #[serde(default)]
     token: String,
     remote: String,
 }
@@ -29,21 +32,93 @@ struct ProxyQuery {
 struct ServerState {
     log: Logger,
     config: Arc<Config>,
+    limits: Arc<LimitState>,
+}
+
+fn client_ip(headers: &HeaderMap, peer: SocketAddr, trust_forwarded: bool) -> IpAddr {
+    if trust_forwarded {
+        for name in ["cf-connecting-ip", "x-real-ip"] {
+            if let Some(value) = headers.get(name).and_then(|v| v.to_str().ok()) {
+                if let Ok(ip) = value.trim().parse::<IpAddr>() {
+                    return ip;
+                }
+            }
+        }
+    }
+    peer.ip()
+}
+
+fn reject(log: &Logger, status: StatusCode, reason: RejectReason, msg: &'static str) -> Response {
+    METRICS.inc_reject(reason.clone());
+    warn!(
+        log,
+        "Rejected proxy request";
+        "reason" => format!("{:?}", reason),
+        "status" => status.as_u16()
+    );
+    (status, msg).into_response()
+}
+
+fn dest_status(err: &DestError) -> StatusCode {
+    match err {
+        DestError::InvalidRemote => StatusCode::BAD_REQUEST,
+        DestError::BadPort | DestError::IpLiteral | DestError::PrivateIp => StatusCode::FORBIDDEN,
+        DestError::Dns | DestError::Connect => StatusCode::BAD_GATEWAY,
+    }
+}
+
+fn dest_message(err: &DestError) -> &'static str {
+    match err {
+        DestError::InvalidRemote => "invalid remote",
+        DestError::BadPort => "destination port not allowed",
+        DestError::IpLiteral => "IP literals are not allowed",
+        DestError::PrivateIp => "destination is not a public address",
+        DestError::Dns => "failed to resolve destination",
+        DestError::Connect => "failed to connect to destination",
+    }
+}
+
+fn limit_status(err: &LimitError) -> StatusCode {
+    match err {
+        LimitError::GlobalFull | LimitError::PerDestFull => StatusCode::SERVICE_UNAVAILABLE,
+        LimitError::ByteCap => StatusCode::FORBIDDEN,
+        _ => StatusCode::TOO_MANY_REQUESTS,
+    }
+}
+
+fn limit_message(err: &LimitError) -> &'static str {
+    match err {
+        LimitError::GlobalFull => "proxy is at capacity",
+        LimitError::PerIpFull => "too many connections from this address",
+        LimitError::PerDestFull => "too many connections to this destination",
+        LimitError::ConnectRate | LimitError::GlobalConnectRate => "connect rate limit exceeded",
+        LimitError::DistinctDests => "too many distinct destinations",
+        LimitError::ByteCap => "byte limit exceeded",
+    }
 }
 
 fn validate_token(
     query: &ProxyQuery,
+    auth_mode: AuthMode,
     secret_key: &Option<PasetoSymmetricKey<V4, Local>>,
     log: &Logger,
 ) -> Result<(), StatusCode> {
+    if auth_mode == AuthMode::Public {
+        return Ok(());
+    }
+
     if cfg!(debug_assertions) && query.token == "testtoken" {
         return Ok(());
+    }
+
+    if query.token.is_empty() {
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     if secret_key.is_none() {
         crit!(
             log,
-            "PASETO_SECRET_KEY variable is not set, rejecting client!"
+            "MAILINER_PASETO_SECRET is not set, rejecting client!"
         );
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -56,7 +131,8 @@ fn validate_token(
                 return Err(PasetoClaimError::Expired);
             }
 
-            let datetime = chrono::DateTime::parse_from_rfc3339(val).map_err(|_| PasetoClaimError::RFC3339Date(val.to_string()))?;
+            let datetime = chrono::DateTime::parse_from_rfc3339(val)
+                .map_err(|_| PasetoClaimError::RFC3339Date(val.to_string()))?;
             let now = chrono::Utc::now();
 
             if datetime <= now {
@@ -64,12 +140,12 @@ fn validate_token(
             } else {
                 Ok(())
             }
-        } )
+        })
         .check_claim(
             CustomClaim::try_from(("remote", query.remote.clone()))
                 .map_err(|_| StatusCode::UNAUTHORIZED)?,
         )
-        .parse(&query.token, &secret_key.as_ref().unwrap())
+        .parse(&query.token, secret_key.as_ref().unwrap())
         .map(|_| ())
         .map_err(|_| StatusCode::UNAUTHORIZED)
 }
@@ -78,35 +154,98 @@ async fn proxy_handler(
     query: Query<ProxyQuery>,
     ws: WebSocketUpgrade,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     State(state): State<Arc<ServerState>>,
 ) -> impl IntoResponse {
-    let log = state.log.new(o!("client" => addr.to_string()));
+    let client = client_ip(&headers, addr, state.config.trust_forwarded_client_ip);
+    let log = state.log.new(o!("client" => client.to_string()));
 
-    if let Err(err) = validate_token(&query, &state.config.secret_key, &log) {
-        return Err::<Body, StatusCode>(err).into_response();
+    if let Err(err) = validate_token(
+        &query,
+        state.config.auth_mode,
+        &state.config.secret_key,
+        &log,
+    ) {
+        let reason = if err == StatusCode::INTERNAL_SERVER_ERROR {
+            return Err::<Body, StatusCode>(err).into_response();
+        } else {
+            RejectReason::Auth
+        };
+        return reject(&log, err, reason, "unauthorized");
     }
+
+    let remote = match dest::parse_remote(&query.remote) {
+        Ok(r) => r,
+        Err(e) => {
+            return reject(&log, dest_status(&e), RejectReason::from(e), dest_message(&e));
+        }
+    };
+
+    if let Err(e) = dest::check_policy(&remote, &state.config.dest) {
+        return reject(&log, dest_status(&e), RejectReason::from(e), dest_message(&e));
+    }
+
+    let dest_key = remote.dest_key();
+    if let Err(e) = state.limits.record_attempt(client, &dest_key) {
+        return reject(&log, limit_status(&e), RejectReason::from(e), limit_message(&e));
+    }
+
+    let addrs = match dest::resolve_filtered(&remote, &state.config.dest).await {
+        Ok(a) => a,
+        Err(e) => {
+            return reject(&log, dest_status(&e), RejectReason::from(e), dest_message(&e));
+        }
+    };
+
+    let lease = match state.limits.acquire(client, &dest_key) {
+        Ok(l) => l,
+        Err(e) => {
+            return reject(&log, limit_status(&e), RejectReason::from(e), limit_message(&e));
+        }
+    };
+
+    let tcp = match dest::connect_addrs(&addrs, state.config.tcp_connect_timeout).await {
+        Ok(s) => s,
+        Err(e) => {
+            drop(lease);
+            return reject(&log, dest_status(&e), RejectReason::from(e), dest_message(&e));
+        }
+    };
 
     debug!(log, "Incoming WS connection");
     let fail_log = log.clone();
     let upgrade_log = log.clone();
+    let config = Arc::clone(&state.config);
+    let limits = Arc::clone(&state.limits);
     ws.on_failed_upgrade(move |error: axum::Error| {
         METRICS.inc_ws_error(metrics::Error::Handshake);
         error!(fail_log, "Failed to upgrade WebSocket connection"; "error" => error.to_string());
     })
     .on_upgrade(move |socket| async move {
-        Connection::new(query.remote.clone(), upgrade_log, Arc::clone(&state.config))
-            .run(socket)
-            .await;
+        Connection::new(
+            remote,
+            client,
+            tcp,
+            lease,
+            limits,
+            upgrade_log,
+            config,
+        )
+        .run(socket)
+        .await;
     })
 }
 
 #[derive(Deserialize)]
 struct MetricsQuery {
-    token: Option<String>
+    token: Option<String>,
 }
 
 #[debug_handler]
-async fn metrics_handler(State(state): State<Arc<ServerState>>, Query(query): Query<MetricsQuery>) -> impl IntoResponse {
+async fn metrics_handler(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<MetricsQuery>,
+) -> impl IntoResponse {
     if let Some(metrics_auth_key) = state.config.metrics_auth_key.as_ref() {
         if query.token.as_deref() != Some(metrics_auth_key) {
             return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
@@ -117,18 +256,20 @@ async fn metrics_handler(State(state): State<Arc<ServerState>>, Query(query): Qu
     (StatusCode::OK, METRICS.encode()).into_response()
 }
 
-pub async fn run_proxy(
-    listener: TcpListener,
-    config: Config,
-) -> Result<(), Error> {
+pub async fn run_proxy(listener: TcpListener, config: Config) -> Result<(), Error> {
+    let limits = Arc::new(LimitState::new(config.limits.clone()));
     let state = Arc::new(ServerState {
         log: DEFAULT_LOGGER.get().unwrap().clone(),
-        config: Arc::new(config)
+        config: Arc::new(config),
+        limits,
     });
 
     let app = Router::new()
         .route("/proxy", get(proxy_handler).with_state(Arc::clone(&state)))
-        .route("/metrics", get(metrics_handler).with_state(Arc::clone(&state)));
+        .route(
+            "/metrics",
+            get(metrics_handler).with_state(Arc::clone(&state)),
+        );
 
     axum::serve(
         listener,
@@ -140,6 +281,10 @@ pub async fn run_proxy(
 
 #[cfg(test)]
 mod test {
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use axum::http::HeaderMap;
     use futures_util::{SinkExt, StreamExt};
     use rusty_paseto::prelude::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -147,10 +292,11 @@ mod test {
     use tokio_websockets::client::Builder;
     use tokio_websockets::{upgrade, Message};
 
-    use crate::config::Config;
+    use crate::config::{AuthMode, Config};
     use crate::init_logging;
+    use crate::limits::LimitsConfig;
 
-    use super::run_proxy;
+    use super::{client_ip, run_proxy};
 
     struct TestServer {
         port: u16,
@@ -197,11 +343,9 @@ mod test {
     async fn create_servers(
         secret_key: Option<PasetoSymmetricKey<V4, Local>>,
     ) -> (u16, TestServer) {
-        create_servers_with_config(Config {
-            secret_key,
-            ..Default::default()
-        })
-        .await
+        let mut config = Config::for_tests();
+        config.secret_key = secret_key;
+        create_servers_with_config(config).await
     }
 
     async fn create_servers_with_config(config: Config) -> (u16, TestServer) {
@@ -216,6 +360,30 @@ mod test {
         });
 
         (proxy_port, server)
+    }
+
+    fn upgrade_status(err: tokio_websockets::Error) -> u16 {
+        match err {
+            tokio_websockets::Error::Upgrade(upgrade::Error::DidNotSwitchProtocols(code)) => {
+                code
+            }
+            other => panic!("Unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn client_ip_prefers_cf_when_trusted() {
+        let mut headers = HeaderMap::new();
+        headers.insert("cf-connecting-ip", "203.0.113.9".parse().unwrap());
+        let peer: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        assert_eq!(
+            client_ip(&headers, peer, true).to_string(),
+            "203.0.113.9"
+        );
+        assert_eq!(
+            client_ip(&headers, peer, false).to_string(),
+            "127.0.0.1"
+        );
     }
 
     #[tokio::test]
@@ -264,16 +432,11 @@ mod test {
         .await
         .expect_err("Connected successfully despite missing 'remote' param");
 
-        match err {
-            tokio_websockets::Error::Upgrade(upgrade::Error::DidNotSwitchProtocols(code)) => {
-                assert_eq!(code, 400)
-            }
-            _ => panic!("Unexpected error: {:?}", err),
-        };
+        assert_eq!(upgrade_status(err), 400);
     }
 
     #[tokio::test]
-    async fn test_missing_token_returns_bad_request() {
+    async fn test_missing_token_returns_unauthorized() {
         let (proxy_port, server) = create_servers(None).await;
 
         let err = Builder::from_uri(
@@ -288,12 +451,7 @@ mod test {
         .await
         .expect_err("Connected successfully despite missing 'token' param");
 
-        match err {
-            tokio_websockets::Error::Upgrade(upgrade::Error::DidNotSwitchProtocols(code)) => {
-                assert_eq!(code, 400)
-            }
-            _ => panic!("Unexpected error: {:?}", err),
-        };
+        assert_eq!(upgrade_status(err), 401);
     }
 
     #[tokio::test]
@@ -312,12 +470,7 @@ mod test {
         .await
         .expect_err("Connected successfully despite invalid 'token' param");
 
-        match err {
-            tokio_websockets::Error::Upgrade(upgrade::Error::DidNotSwitchProtocols(code)) => {
-                assert_eq!(code, 500)
-            }
-            _ => panic!("Unexpected error: {:?}", err),
-        };
+        assert_eq!(upgrade_status(err), 500);
     }
 
     #[tokio::test]
@@ -338,12 +491,7 @@ mod test {
         .await
         .expect_err("Connected successfully despite invalid 'token' param");
 
-        match err {
-            tokio_websockets::Error::Upgrade(upgrade::Error::DidNotSwitchProtocols(code)) => {
-                assert_eq!(code, 401)
-            }
-            _ => panic!("Unexpected error: {:?}", err),
-        };
+        assert_eq!(upgrade_status(err), 401);
     }
 
     #[tokio::test]
@@ -411,11 +559,9 @@ mod test {
     /// proxy sends a WebSocket ping instead of closing, so traffic still works.
     #[tokio::test]
     async fn test_idle_connection_survives_keepalive() {
-        use std::time::Duration;
-
         let (proxy_port, server) = create_servers_with_config(Config {
             ws_idle_timeout: Duration::from_millis(100),
-            ..Default::default()
+            ..Config::for_tests()
         })
         .await;
 
@@ -490,5 +636,209 @@ mod test {
         .connect()
         .await
         .expect("Failed to connection to proxy");
+    }
+
+    #[tokio::test]
+    async fn test_public_auth_allows_missing_token() {
+        let (proxy_port, server) = create_servers_with_config(Config {
+            auth_mode: AuthMode::Public,
+            ..Config::for_tests()
+        })
+        .await;
+
+        let (mut client, _) = Builder::from_uri(
+            format!(
+                "ws://127.0.0.1:{}/proxy?remote=127.0.0.1:{}",
+                proxy_port, server.port
+            )
+            .parse()
+            .unwrap(),
+        )
+        .connect()
+        .await
+        .expect("public mode should not require a token");
+
+        let msg = Message::binary(b"ok".as_slice());
+        client.send(msg.clone()).await.unwrap();
+        let resp = client.next().await.unwrap().unwrap();
+        assert_eq!(
+            bytes::Bytes::from(resp.into_payload()),
+            bytes::Bytes::from(msg.into_payload())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rejects_disallowed_port() {
+        let (proxy_port, server) = create_servers_with_config(Config {
+            dest: crate::dest::DestPolicy::default(),
+            ..Config::for_tests()
+        })
+        .await;
+
+        let err = Builder::from_uri(
+            format!(
+                "ws://127.0.0.1:{}/proxy?remote=127.0.0.1:{}&token=testtoken",
+                proxy_port, server.port
+            )
+            .parse()
+            .unwrap(),
+        )
+        .connect()
+        .await
+        .expect_err("random echo port must be rejected");
+        assert_eq!(upgrade_status(err), 403);
+    }
+
+    #[tokio::test]
+    async fn test_rejects_private_destination() {
+        let mut dest = crate::dest::DestPolicy::unrestricted();
+        dest.allow_private_destinations = false;
+        dest.allow_ip_literals = true;
+        let (proxy_port, server) = create_servers_with_config(Config {
+            dest,
+            ..Config::for_tests()
+        })
+        .await;
+
+        let err = Builder::from_uri(
+            format!(
+                "ws://127.0.0.1:{}/proxy?remote=127.0.0.1:{}&token=testtoken",
+                proxy_port, server.port
+            )
+            .parse()
+            .unwrap(),
+        )
+        .connect()
+        .await
+        .expect_err("loopback must be rejected");
+        assert_eq!(upgrade_status(err), 403);
+    }
+
+    #[tokio::test]
+    async fn test_rejects_ip_literal() {
+        let mut dest = crate::dest::DestPolicy::unrestricted();
+        dest.allow_ip_literals = false;
+        let (proxy_port, server) = create_servers_with_config(Config {
+            dest,
+            ..Config::for_tests()
+        })
+        .await;
+
+        let err = Builder::from_uri(
+            format!(
+                "ws://127.0.0.1:{}/proxy?remote=127.0.0.1:{}&token=testtoken",
+                proxy_port, server.port
+            )
+            .parse()
+            .unwrap(),
+        )
+        .connect()
+        .await
+        .expect_err("IP literal must be rejected");
+        assert_eq!(upgrade_status(err), 403);
+    }
+
+    #[tokio::test]
+    async fn test_per_ip_connection_limit() {
+        let (proxy_port, server) = create_servers_with_config(Config {
+            limits: LimitsConfig {
+                max_conns_per_ip: 1,
+                ..LimitsConfig::unlimited()
+            },
+            ..Config::for_tests()
+        })
+        .await;
+
+        let uri = format!(
+            "ws://127.0.0.1:{}/proxy?remote=127.0.0.1:{}&token=testtoken",
+            proxy_port, server.port
+        );
+        let (_first, _) = Builder::from_uri(uri.parse().unwrap())
+            .connect()
+            .await
+            .expect("first connection should succeed");
+
+        let err = Builder::from_uri(uri.parse().unwrap())
+            .connect()
+            .await
+            .expect_err("second connection should be limited");
+        assert_eq!(upgrade_status(err), 429);
+    }
+
+    #[tokio::test]
+    async fn test_byte_cap_closes_session() {
+        let (proxy_port, server) = create_servers_with_config(Config {
+            max_bytes_per_connection: 8,
+            ..Config::for_tests()
+        })
+        .await;
+
+        let (mut client, _) = Builder::from_uri(
+            format!(
+                "ws://127.0.0.1:{}/proxy?remote=127.0.0.1:{}&token=testtoken",
+                proxy_port, server.port
+            )
+            .parse()
+            .unwrap(),
+        )
+        .connect()
+        .await
+        .unwrap();
+
+        client
+            .send(Message::binary("xxxxxxxxxxxxxxxx"))
+            .await
+            .expect("send should be accepted by the WS layer");
+
+        let closed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match client.next().await {
+                    None => return true,
+                    Some(Ok(m)) if m.is_close() => return true,
+                    Some(Err(_)) => return true,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for byte-cap close");
+        assert!(closed);
+    }
+
+    #[tokio::test]
+    async fn test_max_lifetime_closes_session() {
+        let (proxy_port, server) = create_servers_with_config(Config {
+            max_lifetime: Duration::from_millis(80),
+            ..Config::for_tests()
+        })
+        .await;
+
+        let (mut client, _) = Builder::from_uri(
+            format!(
+                "ws://127.0.0.1:{}/proxy?remote=127.0.0.1:{}&token=testtoken",
+                proxy_port, server.port
+            )
+            .parse()
+            .unwrap(),
+        )
+        .connect()
+        .await
+        .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let closed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match client.next().await {
+                    None => return true,
+                    Some(Ok(m)) if m.is_close() => return true,
+                    Some(Err(_)) => return true,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for lifetime close");
+        assert!(closed);
     }
 }

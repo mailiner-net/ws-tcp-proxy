@@ -26,6 +26,58 @@ pub struct ErrorLabels {
     pub error: Error,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
+pub enum RejectReason {
+    Auth,
+    InvalidRemote,
+    BadPort,
+    IpLiteral,
+    PrivateIp,
+    Dns,
+    Connect,
+    ConnectRate,
+    GlobalConnectRate,
+    DistinctDests,
+    GlobalFull,
+    PerIpFull,
+    PerDestFull,
+    Proto,
+    ByteCap,
+    Lifetime,
+}
+
+impl From<crate::dest::DestError> for RejectReason {
+    fn from(e: crate::dest::DestError) -> Self {
+        match e {
+            crate::dest::DestError::InvalidRemote => RejectReason::InvalidRemote,
+            crate::dest::DestError::BadPort => RejectReason::BadPort,
+            crate::dest::DestError::IpLiteral => RejectReason::IpLiteral,
+            crate::dest::DestError::PrivateIp => RejectReason::PrivateIp,
+            crate::dest::DestError::Dns => RejectReason::Dns,
+            crate::dest::DestError::Connect => RejectReason::Connect,
+        }
+    }
+}
+
+impl From<crate::limits::LimitError> for RejectReason {
+    fn from(e: crate::limits::LimitError) -> Self {
+        match e {
+            crate::limits::LimitError::GlobalFull => RejectReason::GlobalFull,
+            crate::limits::LimitError::PerIpFull => RejectReason::PerIpFull,
+            crate::limits::LimitError::PerDestFull => RejectReason::PerDestFull,
+            crate::limits::LimitError::ConnectRate => RejectReason::ConnectRate,
+            crate::limits::LimitError::GlobalConnectRate => RejectReason::GlobalConnectRate,
+            crate::limits::LimitError::DistinctDests => RejectReason::DistinctDests,
+            crate::limits::LimitError::ByteCap => RejectReason::ByteCap,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct RejectLabels {
+    pub reason: RejectReason,
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct ConnectionsLabels {
     pub remote: String,
@@ -42,6 +94,8 @@ pub struct Metrics {
     pub connection_duration: Histogram,
 
     pub connections: Family<ConnectionsLabels, Counter>,
+
+    pub rejects: Family<RejectLabels, Counter>,
 
     process_start_time_seconds: Gauge
 }
@@ -60,6 +114,7 @@ impl Metrics {
             tcp_errors: Family::<ErrorLabels, Counter>::default(),
             connection_duration: Histogram::new(DURATION_BUCKETS.into_iter()),
             connections: Family::<ConnectionsLabels, Counter>::default(),
+            rejects: Family::<RejectLabels, Counter>::default(),
 
             process_start_time_seconds: Gauge::default(),
         };
@@ -90,6 +145,11 @@ impl Metrics {
             metrics.connections.clone(),
         );
         metrics.registry.register(
+            "rejects",
+            "Number of rejected proxy attempts by reason",
+            metrics.rejects.clone(),
+        );
+        metrics.registry.register(
             "process_start_time_seconds",
             "Start time of the process since unix epoch in seconds",
             metrics.process_start_time_seconds.clone(),
@@ -114,6 +174,10 @@ impl Metrics {
 
     pub fn inc_ws_error(&self, error: Error) {
         self.ws_errors.get_or_create(&ErrorLabels { error }).inc();
+    }
+
+    pub fn inc_reject(&self, reason: RejectReason) {
+        self.rejects.get_or_create(&RejectLabels { reason }).inc();
     }
 
     pub fn encode(&self) -> String {
