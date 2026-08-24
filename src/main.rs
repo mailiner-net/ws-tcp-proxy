@@ -114,6 +114,10 @@ fn apply_env(config: &mut Config) {
         config.limits.ipv6_prefix as usize,
     );
     config.limits.ipv6_prefix = v6p.clamp(0, 128) as u8;
+    config.limits.max_tracked_ips = env_usize(
+        "MAILINER_MAX_TRACKED_IPS",
+        config.limits.max_tracked_ips,
+    );
 }
 
 fn parse_metrics_auth_key() -> Option<String> {

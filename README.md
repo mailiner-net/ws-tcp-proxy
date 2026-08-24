@@ -112,6 +112,7 @@ Rejected attempts increment `rejects_total{reason=...}` (`bad_port`,
 | `MAILINER_MAX_BYTES_PER_IP_PER_HOUR` | `1073741824` |
 | `MAILINER_LIMIT_IPV4_PREFIX` | `32` (set `24` on the public internet if clients share CGNAT) |
 | `MAILINER_LIMIT_IPV6_PREFIX` | `64` |
+| `MAILINER_MAX_TRACKED_IPS` | `50000` (`0` = no cap) |
 | `MAILINER_MAX_LIFETIME_SECS` | `86400` |
 | `MAILINER_TRUST_FORWARDED_CLIENT_IP` | `0` |
 | `MAILINER_REQUIRE_PROTOCOL_PROBE` | `1` |

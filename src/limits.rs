@@ -42,6 +42,8 @@ pub struct LimitsConfig {
     /// IPv6 prefix length used as the limit key (`64` so a /64 cannot
     /// mint a fresh budget per address).
     pub ipv6_prefix: u8,
+    /// Drop idle per-IP rows after this many tracked prefixes (`0` = no cap).
+    pub max_tracked_ips: usize,
 }
 
 impl Default for LimitsConfig {
@@ -60,6 +62,7 @@ impl Default for LimitsConfig {
             bytes_window: Duration::from_secs(3600),
             ipv4_prefix: 32,
             ipv6_prefix: 64,
+            max_tracked_ips: 50_000,
         }
     }
 }
@@ -81,6 +84,7 @@ impl LimitsConfig {
             bytes_window: Duration::from_secs(3600),
             ipv4_prefix: 32,
             ipv6_prefix: 64,
+            max_tracked_ips: 0,
         }
     }
 }
@@ -173,6 +177,7 @@ struct Inner {
     global_connects: VecDeque<Instant>,
     per_ip: HashMap<IpAddr, IpState>,
     per_dest: HashMap<String, usize>,
+    last_gc: Instant,
 }
 
 impl Inner {
@@ -182,6 +187,25 @@ impl Inner {
             now,
             self.cfg.global_connects_window,
         );
+    }
+
+    /// Drop per-IP rows whose windows have expired and that hold no lease.
+    fn gc_idle(&mut self, now: Instant) {
+        self.prune_global(now);
+        let cfg = self.cfg.clone();
+        self.per_ip.retain(|_, st| {
+            st.prune(now, &cfg);
+            !st.is_idle()
+        });
+        self.last_gc = now;
+    }
+
+    fn maybe_gc(&mut self, now: Instant) {
+        let overdue = now.duration_since(self.last_gc) >= Duration::from_secs(30);
+        let large = self.per_ip.len() >= 10_000;
+        if overdue || large {
+            self.gc_idle(now);
+        }
     }
 }
 
@@ -198,16 +222,29 @@ impl LimitState {
                 global_connects: VecDeque::new(),
                 per_ip: HashMap::new(),
                 per_dest: HashMap::new(),
+                last_gc: Instant::now(),
             }),
         }
     }
 
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     /// Count a connect *attempt* (after dest policy) toward rate / diversity.
     pub fn record_attempt(&self, ip: IpAddr, dest: &str) -> Result<(), LimitError> {
-        let mut g = self.inner.lock().expect("limits mutex poisoned");
+        let mut g = self.lock();
         let ip = limit_key(ip, g.cfg.ipv4_prefix, g.cfg.ipv6_prefix);
         let now = Instant::now();
+        g.maybe_gc(now);
         g.prune_global(now);
+
+        if capped(g.cfg.max_tracked_ips, g.per_ip.len()) && !g.per_ip.contains_key(&ip) {
+            g.gc_idle(now);
+            if capped(g.cfg.max_tracked_ips, g.per_ip.len()) && !g.per_ip.contains_key(&ip) {
+                return Err(LimitError::GlobalConnectRate);
+            }
+        }
 
         if capped(g.cfg.global_connects, g.global_connects.len()) {
             return Err(LimitError::GlobalConnectRate);
@@ -236,8 +273,9 @@ impl LimitState {
 
     /// Reserve a live connection slot. Pair with [`ConnectionLease`].
     pub fn acquire(self: &Arc<Self>, ip: IpAddr, dest: &str) -> Result<ConnectionLease, LimitError> {
-        let mut g = self.inner.lock().expect("limits mutex poisoned");
+        let mut g = self.lock();
         let ip = limit_key(ip, g.cfg.ipv4_prefix, g.cfg.ipv6_prefix);
+        g.maybe_gc(Instant::now());
         if capped(g.cfg.max_global_connections, g.global_connections) {
             return Err(LimitError::GlobalFull);
         }
@@ -265,10 +303,13 @@ impl LimitState {
     }
 
     fn release(&self, ip: IpAddr, dest: &str) {
-        let mut g = self.inner.lock().expect("limits mutex poisoned");
+        let mut g = self.lock();
         g.global_connections = g.global_connections.saturating_sub(1);
+        let cfg = g.cfg.clone();
+        let now = Instant::now();
         if let Some(st) = g.per_ip.get_mut(&ip) {
             st.connections = st.connections.saturating_sub(1);
+            st.prune(now, &cfg);
             if st.is_idle() {
                 g.per_ip.remove(&ip);
             }
@@ -285,8 +326,9 @@ impl LimitState {
         if n == 0 {
             return Ok(());
         }
-        let mut g = self.inner.lock().expect("limits mutex poisoned");
+        let mut g = self.lock();
         let ip = limit_key(ip, g.cfg.ipv4_prefix, g.cfg.ipv6_prefix);
+        g.maybe_gc(Instant::now());
         if g.cfg.max_bytes_per_ip == 0 {
             return Ok(());
         }
@@ -300,6 +342,11 @@ impl LimitState {
         st.bytes.push_back((now, n));
         st.bytes_sum = st.bytes_sum.saturating_add(n);
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn tracked_ip_count(&self) -> usize {
+        self.lock().per_ip.len()
     }
 }
 
@@ -466,6 +513,43 @@ mod tests {
         assert!(state
             .record_attempt(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)), "a:993")
             .is_ok());
+    }
+
+    #[test]
+    fn idle_attempt_rows_are_garbage_collected() {
+        let state = Arc::new(LimitState::new(LimitsConfig {
+            connects_per_ip: 8,
+            connects_per_ip_window: Duration::from_millis(40),
+            distinct_dests_window: Duration::from_millis(40),
+            ..LimitsConfig::unlimited()
+        }));
+        state.record_attempt(ip(1), "a:993").unwrap();
+        assert_eq!(state.tracked_ip_count(), 1);
+        std::thread::sleep(Duration::from_millis(50));
+        // Force GC regardless of the 30s interval.
+        {
+            let mut g = state.lock();
+            g.gc_idle(Instant::now());
+        }
+        assert_eq!(state.tracked_ip_count(), 0);
+    }
+
+    #[test]
+    fn tracked_ip_cap_rejects_new_prefixes() {
+        let state = Arc::new(LimitState::new(LimitsConfig {
+            max_tracked_ips: 2,
+            ..LimitsConfig::unlimited()
+        }));
+        state.record_attempt(ip(1), "a:993").unwrap();
+        state
+            .record_attempt(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)), "a:993")
+            .unwrap();
+        assert_eq!(
+            state
+                .record_attempt(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), "a:993")
+                .unwrap_err(),
+            LimitError::GlobalConnectRate
+        );
     }
 
     #[test]
