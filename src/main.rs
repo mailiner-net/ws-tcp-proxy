@@ -39,9 +39,17 @@ struct Args {
 }
 
 fn parse_secret_key() -> Option<PasetoSymmetricKey<V4, Local>> {
-    std::env::var(MAILINER_PASETO_SECRET).ok().map(|key| {
-        PasetoSymmetricKey::<V4, Local>::from(Key::from(key.as_bytes()))
-    })
+    let key = std::env::var(MAILINER_PASETO_SECRET).ok()?;
+    let bytes = key.as_bytes();
+    if bytes.len() != 32 {
+        eprintln!(
+            "{} must be exactly 32 bytes (got {}); refusing to load it",
+            MAILINER_PASETO_SECRET,
+            bytes.len()
+        );
+        return None;
+    }
+    Some(PasetoSymmetricKey::<V4, Local>::from(Key::from(bytes)))
 }
 
 fn parse_auth_mode() -> AuthMode {
@@ -99,6 +107,7 @@ fn apply_env(config: &mut Config) {
         "MAILINER_WS_MAX_FRAME_BYTES",
         config.ws_max_frame_bytes,
     );
+    config.paseto_max_ttl = env_secs("MAILINER_PASETO_MAX_TTL_SECS", config.paseto_max_ttl);
     config.limits.max_global_connections = env_usize(
         "MAILINER_MAX_GLOBAL_CONNECTIONS",
         config.limits.max_global_connections,

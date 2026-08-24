@@ -59,6 +59,9 @@ pub struct Config {
     pub ws_max_message_bytes: usize,
     /// Max WebSocket frame size (tungstenite default is 16 MiB).
     pub ws_max_frame_bytes: usize,
+    /// Reject Paseto tokens whose `exp` is further ahead than this.
+    /// `Duration::ZERO` disables the cap.
+    pub paseto_max_ttl: Duration,
 }
 
 impl Default for Config {
@@ -89,6 +92,7 @@ impl Default for Config {
             allowed_hosts: HashSet::new(),
             ws_max_message_bytes: 1024 * 1024,
             ws_max_frame_bytes: 256 * 1024,
+            paseto_max_ttl: Duration::from_secs(3600),
         }
     }
 }

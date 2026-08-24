@@ -155,21 +155,57 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
+/// Token from `Sec-WebSocket-Protocol`: `bearer.<token>` or a raw `v4.local.*`.
+fn protocol_token(headers: &HeaderMap) -> Option<&str> {
+    let raw = headers
+        .get(header::SEC_WEBSOCKET_PROTOCOL)?
+        .to_str()
+        .ok()?;
+    raw.split(',').map(str::trim).find_map(|p| {
+        p.strip_prefix("bearer.")
+            .filter(|t| !t.is_empty())
+            .or_else(|| p.starts_with("v4.local.").then_some(p))
+    })
+}
+
+fn offered_auth_protocol(headers: &HeaderMap) -> Option<String> {
+    let raw = headers
+        .get(header::SEC_WEBSOCKET_PROTOCOL)?
+        .to_str()
+        .ok()?;
+    raw.split(',')
+        .map(str::trim)
+        .find(|p| p.starts_with("bearer.") || p.starts_with("v4.local."))
+        .map(str::to_string)
+}
+
+fn proxy_token<'a>(query: &'a ProxyQuery, headers: &'a HeaderMap) -> &'a str {
+    if !query.token.is_empty() {
+        return query.token.as_str();
+    }
+    if let Some(b) = bearer_token(headers) {
+        return b;
+    }
+    protocol_token(headers).unwrap_or("")
+}
+
 fn validate_token(
-    query: &ProxyQuery,
+    token: &str,
+    remote: &str,
     auth_mode: AuthMode,
     secret_key: &Option<PasetoSymmetricKey<V4, Local>>,
+    max_ttl: std::time::Duration,
     log: &Logger,
 ) -> Result<(), StatusCode> {
     if auth_mode == AuthMode::Public {
         return Ok(());
     }
 
-    if cfg!(debug_assertions) && query.token == "testtoken" {
+    if cfg!(debug_assertions) && token == "testtoken" {
         return Ok(());
     }
 
-    if query.token.is_empty() {
+    if token.is_empty() {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -181,7 +217,7 @@ fn validate_token(
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    PasetoParser::<V4, Local>::default()
+    let claims = PasetoParser::<V4, Local>::default()
         .validate_claim(ExpirationClaim::default(), &|_, value| {
             let val = value.as_str().unwrap_or_default();
             // Don't permit non-expiring tokens
@@ -200,12 +236,25 @@ fn validate_token(
             }
         })
         .check_claim(
-            CustomClaim::try_from(("remote", query.remote.clone()))
+            CustomClaim::try_from(("remote", remote.to_string()))
                 .map_err(|_| StatusCode::UNAUTHORIZED)?,
         )
-        .parse(&query.token, secret_key.as_ref().unwrap())
-        .map(|_| ())
-        .map_err(|_| StatusCode::UNAUTHORIZED)
+        .parse(token, secret_key.as_ref().unwrap())
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    if !max_ttl.is_zero() {
+        let exp = claims
+            .get("exp")
+            .and_then(|v| v.as_str())
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        let datetime = chrono::DateTime::parse_from_rfc3339(exp)
+            .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        let remaining = datetime.signed_duration_since(chrono::Utc::now());
+        if remaining.to_std().map(|d| d > max_ttl).unwrap_or(true) {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    }
+    Ok(())
 }
 
 async fn proxy_handler(
@@ -241,9 +290,11 @@ async fn proxy_handler(
     }
 
     if let Err(err) = validate_token(
-        &query,
+        proxy_token(&query, &headers),
+        &query.remote,
         state.config.auth_mode,
         &state.config.secret_key,
+        state.config.paseto_max_ttl,
         &log,
     ) {
         let reason = if err == StatusCode::INTERNAL_SERVER_ERROR {
@@ -304,9 +355,13 @@ async fn proxy_handler(
     let upgrade_log = log.clone();
     let config = Arc::clone(&state.config);
     let limits = Arc::clone(&state.limits);
-    ws.max_message_size(state.config.ws_max_message_bytes)
-        .max_frame_size(state.config.ws_max_frame_bytes)
-        .on_failed_upgrade(move |error: axum::Error| {
+    let mut ws = ws
+        .max_message_size(state.config.ws_max_message_bytes)
+        .max_frame_size(state.config.ws_max_frame_bytes);
+    if let Some(proto) = offered_auth_protocol(&headers) {
+        ws = ws.protocols([proto]);
+    }
+    ws.on_failed_upgrade(move |error: axum::Error| {
         METRICS.inc_ws_error(metrics::Error::Handshake);
         error!(fail_log, "Failed to upgrade WebSocket connection"; "error" => error.to_string());
     })
@@ -416,7 +471,9 @@ mod test {
     use crate::init_logging;
     use crate::limits::LimitsConfig;
 
-    use super::{bearer_token, client_ip, host_allowed, origin_allowed, run_proxy, token_eq};
+    use super::{
+        bearer_token, client_ip, host_allowed, origin_allowed, protocol_token, run_proxy, token_eq,
+    };
 
     struct TestServer {
         port: u16,
@@ -532,6 +589,20 @@ mod test {
         headers.insert("authorization", "bearer  also".parse().unwrap());
         assert_eq!(bearer_token(&headers), Some("also"));
         assert_eq!(bearer_token(&HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn protocol_token_accepts_bearer_and_paseto() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "sec-websocket-protocol",
+            "bearer.v4.local.abc".parse().unwrap(),
+        );
+        assert_eq!(protocol_token(&headers), Some("v4.local.abc"));
+        headers.insert("sec-websocket-protocol", "v4.local.xyz".parse().unwrap());
+        assert_eq!(protocol_token(&headers), Some("v4.local.xyz"));
+        headers.insert("sec-websocket-protocol", "chat, superchat".parse().unwrap());
+        assert_eq!(protocol_token(&headers), None);
     }
 
     #[test]
@@ -669,6 +740,29 @@ mod test {
         .expect_err("Connected successfully despite invalid 'token' param");
 
         assert_eq!(upgrade_status(err), 401);
+    }
+
+    #[test]
+    fn far_future_exp_is_rejected() {
+        init_logging(slog::Level::Error);
+        let secret = Key::<32>::try_new_random().expect("key");
+        let key = PasetoSymmetricKey::<V4, Local>::from(secret.clone());
+        let far = chrono::Utc::now() + chrono::Duration::days(3650);
+        let token = PasetoBuilder::<V4, Local>::default()
+            .set_claim(ExpirationClaim::try_from(far.to_rfc3339()).unwrap())
+            .set_claim(CustomClaim::try_from(("remote", "imap.example.com:993")).unwrap())
+            .build(&key)
+            .unwrap();
+        let log = crate::DEFAULT_LOGGER.get().unwrap().clone();
+        let err = super::validate_token(
+            &token,
+            "imap.example.com:993",
+            AuthMode::Paseto,
+            &Some(PasetoSymmetricKey::<V4, Local>::from(secret)),
+            Duration::from_secs(3600),
+            &log,
+        );
+        assert_eq!(err, Err(axum::http::StatusCode::UNAUTHORIZED));
     }
 
     #[tokio::test]

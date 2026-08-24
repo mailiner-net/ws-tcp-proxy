@@ -20,7 +20,10 @@ ws://<proxy-host>[:<proxy-port>]/proxy?remote=<host>:<port>&token=<token>
   addresses, and other ports (including `25`) are rejected. See
   [Anti-abuse](#anti-abuse).
 * `<token>`: Required when `MAILINER_AUTH=paseto` (the default). Ignored
-  when `MAILINER_AUTH=public`. See [Authentication](#authentication).
+  when `MAILINER_AUTH=public`. Prefer `Authorization: Bearer` or
+  `Sec-WebSocket-Protocol: bearer.<token>` (or a raw `v4.local.*`
+  protocol) so the token is not written to access logs. Query-string
+  tokens still work for browser clients that cannot set headers.
 
 Example against a public IMAP host:
 
@@ -44,7 +47,9 @@ upstream in local debug, set `MAILINER_ALLOW_IP_LITERALS=1` and
 
 In release builds with `MAILINER_AUTH=paseto` the following MUST be set:
 
-* `MAILINER_PASETO_SECRET` — shared secret used to sign tokens (32 ASCII characters).
+* `MAILINER_PASETO_SECRET` — shared secret used to sign tokens (**exactly** 32 bytes).
+* `MAILINER_PASETO_MAX_TTL_SECS` — reject tokens whose `exp` is further
+  ahead than this (default `3600`). `0` disables the cap.
 
 In debug builds the secret is optional and the literal value `testtoken` bypasses
 Paseto validation.
@@ -109,7 +114,8 @@ Rejected attempts increment `rejects_total{reason=...}` (`bad_port`,
 | Variable | Default |
 |---|---|
 | `MAILINER_AUTH` | `paseto` |
-| `MAILINER_PASETO_SECRET` | required in release + paseto |
+| `MAILINER_PASETO_SECRET` | required in release + paseto (exactly 32 bytes) |
+| `MAILINER_PASETO_MAX_TTL_SECS` | `3600` |
 | `MAILINER_ALLOWED_PORTS` | `143,993,465,587` (`any` / `*` = unrestricted) |
 | `MAILINER_ALLOW_PRIVATE_DESTS` | `0` |
 | `MAILINER_ALLOW_IP_LITERALS` | `0` |
