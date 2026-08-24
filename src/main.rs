@@ -165,6 +165,26 @@ async fn main() -> Result<(), tokio::io::Error> {
     };
     apply_env(&mut config);
 
+    let allow_unsafe = env_bool("MAILINER_UNSAFE", false);
+    let safety = config.public_safety_errors();
+    if !safety.is_empty() {
+        for err in &safety {
+            crit!(DEFAULT_LOGGER.get().unwrap(), "Unsafe configuration"; "error" => err.as_str());
+        }
+        if !allow_unsafe && !cfg!(debug_assertions) {
+            panic!(
+                "refusing to start with unsafe public-hosting settings (set MAILINER_UNSAFE=1 to override): {}",
+                safety.join("; ")
+            );
+        }
+        if allow_unsafe {
+            warn!(
+                DEFAULT_LOGGER.get().unwrap(),
+                "MAILINER_UNSAFE=1: starting despite unsafe configuration"
+            );
+        }
+    }
+
     if config.auth_mode == AuthMode::Paseto && config.secret_key.is_none() {
         if cfg!(debug_assertions) {
             warn!(

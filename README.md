@@ -132,3 +132,4 @@ Rejected attempts increment `rejects_total{reason=...}` (`bad_port`,
 | `MAILINER_ALLOWED_ORIGINS` | empty (no check). Comma-separated, e.g. `https://app.mailiner.net` |
 | `MAILINER_ALLOWED_HOSTS` | empty (no check) |
 | `METRICS_AUTH_TOKEN` | required in release |
+| `MAILINER_UNSAFE` | `0` — release builds refuse `any` ports, private dests, IP literals, disabled probes/caps, public auth without origins, and forwarded-IP trust without CIDRs |
