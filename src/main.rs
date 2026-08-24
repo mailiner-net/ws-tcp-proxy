@@ -28,13 +28,13 @@ const METRICS_AUTH_TOKEN: &str = "METRICS_AUTH_TOKEN";
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(short, long, default_value_t = 9400)]
+    #[arg(short, long, default_value_t = 9400, env = "PORT")]
     port: u16,
 
-    #[arg(short, long, default_value_t = String::from("0.0.0.0") )]
+    #[arg(short, long, default_value_t = String::from("0.0.0.0"), env = "BIND")]
     bind: String,
 
-    #[arg(short = 'l', long, default_value = "info")]
+    #[arg(short = 'l', long, default_value = "info", env = "LOG_LEVEL")]
     log_level: String,
 }
 
