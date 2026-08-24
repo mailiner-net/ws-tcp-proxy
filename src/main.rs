@@ -16,7 +16,8 @@ extern crate slog;
 extern crate slog_term;
 
 use config::{
-    env_bool, env_secs, env_u64, env_usize, parse_allowed_ports, parse_csv_set, AuthMode, Config,
+    env_bool, env_secs, env_u64, env_usize, parse_allowed_ports, parse_cidrs, parse_csv_set,
+    AuthMode, Config,
 };
 use logging::{init_logging, parse_log_level, DEFAULT_LOGGER};
 use server::run_proxy;
@@ -71,6 +72,9 @@ fn apply_env(config: &mut Config) {
         "MAILINER_TRUST_FORWARDED_CLIENT_IP",
         config.trust_forwarded_client_ip,
     );
+    if let Ok(raw) = std::env::var("MAILINER_TRUSTED_PROXIES") {
+        config.trusted_proxies = parse_cidrs(&raw);
+    }
     config.require_protocol_probe = env_bool(
         "MAILINER_REQUIRE_PROTOCOL_PROBE",
         config.require_protocol_probe,

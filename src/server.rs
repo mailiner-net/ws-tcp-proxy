@@ -67,8 +67,13 @@ fn host_allowed(headers: &HeaderMap, allowed: &std::collections::HashSet<String>
     })
 }
 
-fn client_ip(headers: &HeaderMap, peer: SocketAddr, trust_forwarded: bool) -> IpAddr {
-    if trust_forwarded {
+fn client_ip(
+    headers: &HeaderMap,
+    peer: SocketAddr,
+    trust_forwarded: bool,
+    trusted: &[crate::config::Cidr],
+) -> IpAddr {
+    if trust_forwarded && trusted.iter().any(|c| c.contains(peer.ip())) {
         for name in ["cf-connecting-ip", "x-real-ip"] {
             if let Some(value) = headers.get(name).and_then(|v| v.to_str().ok()) {
                 if let Ok(ip) = value.trim().parse::<IpAddr>() {
@@ -189,7 +194,12 @@ async fn proxy_handler(
     headers: HeaderMap,
     State(state): State<Arc<ServerState>>,
 ) -> impl IntoResponse {
-    let client = client_ip(&headers, addr, state.config.trust_forwarded_client_ip);
+    let client = client_ip(
+        &headers,
+        addr,
+        state.config.trust_forwarded_client_ip,
+        &state.config.trusted_proxies,
+    );
     let log = state.log.new(o!("client" => client.to_string()));
 
     if !origin_allowed(&headers, &state.config.allowed_origins) {
@@ -432,12 +442,22 @@ mod test {
         let mut headers = HeaderMap::new();
         headers.insert("cf-connecting-ip", "203.0.113.9".parse().unwrap());
         let peer: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let loopback = crate::config::Cidr::parse("127.0.0.1/32").unwrap();
         assert_eq!(
-            client_ip(&headers, peer, true).to_string(),
+            client_ip(&headers, peer, true, &[loopback]).to_string(),
             "203.0.113.9"
         );
         assert_eq!(
-            client_ip(&headers, peer, false).to_string(),
+            client_ip(&headers, peer, true, &[]).to_string(),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            client_ip(&headers, peer, false, &[loopback]).to_string(),
+            "127.0.0.1"
+        );
+        let other = crate::config::Cidr::parse("10.0.0.0/8").unwrap();
+        assert_eq!(
+            client_ip(&headers, peer, true, &[other]).to_string(),
             "127.0.0.1"
         );
     }

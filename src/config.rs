@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use rusty_paseto::core::{Local, PasetoSymmetricKey, V4};
@@ -39,8 +40,11 @@ pub struct Config {
     /// Hard session lifetime. `Duration::ZERO` = unlimited.
     pub max_lifetime: Duration,
     /// Honour `CF-Connecting-IP` (and `X-Real-IP`) instead of the TCP peer.
-    /// Only enable when the process is behind a trusted reverse proxy.
+    /// Headers are used only when the TCP peer is in [`Self::trusted_proxies`].
     pub trust_forwarded_client_ip: bool,
+    /// CIDRs of reverse proxies allowed to set the forwarded-client header.
+    /// Empty ⇒ forwarded headers are ignored even if trust is enabled.
+    pub trusted_proxies: Vec<Cidr>,
     /// Run TLS-SNI / IMAP / SMTP greeting probes on well-known mail ports.
     pub require_protocol_probe: bool,
     /// If non-empty, a browser `Origin` must be in this set. Requests with
@@ -72,6 +76,7 @@ impl Default for Config {
             max_bytes_per_connection: 250 * 1024 * 1024,
             max_lifetime: Duration::from_secs(24 * 3600),
             trust_forwarded_client_ip: false,
+            trusted_proxies: Vec::new(),
             require_protocol_probe: true,
             allowed_origins: HashSet::new(),
             allowed_hosts: HashSet::new(),
@@ -91,6 +96,77 @@ impl Config {
             ..Self::default()
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cidr {
+    pub addr: IpAddr,
+    pub bits: u8,
+}
+
+impl Cidr {
+    pub fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        let (addr_s, bits) = if let Some((a, b)) = raw.split_once('/') {
+            let addr: IpAddr = a.parse().ok()?;
+            let bits: u8 = b.parse().ok()?;
+            let max = if addr.is_ipv4() { 32 } else { 128 };
+            if bits > max {
+                return None;
+            }
+            (addr, bits)
+        } else {
+            let addr: IpAddr = raw.parse().ok()?;
+            let bits = if addr.is_ipv4() { 32 } else { 128 };
+            (addr, bits)
+        };
+        Some(Cidr { addr: addr_s, bits })
+    }
+
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        match (self.addr, ip) {
+            (IpAddr::V4(prefix), IpAddr::V4(x)) => {
+                let mask = if self.bits == 0 {
+                    0
+                } else {
+                    !0u32 << (32 - self.bits)
+                };
+                (u32::from(x) & mask) == (u32::from(prefix) & mask)
+            }
+            (IpAddr::V6(prefix), IpAddr::V6(x)) => {
+                if let (Some(p4), Some(x4)) = (prefix.to_ipv4_mapped(), x.to_ipv4_mapped()) {
+                    return Cidr {
+                        addr: IpAddr::V4(p4),
+                        bits: self.bits.min(32),
+                    }
+                    .contains(IpAddr::V4(x4));
+                }
+                let mask = if self.bits == 0 {
+                    0
+                } else {
+                    !0u128 << (128 - self.bits)
+                };
+                (u128::from(x) & mask) == (u128::from(prefix) & mask)
+            }
+            (IpAddr::V4(prefix), IpAddr::V6(x)) => x
+                .to_ipv4_mapped()
+                .map(|v4| {
+                    Cidr {
+                        addr: IpAddr::V4(prefix),
+                        bits: self.bits,
+                    }
+                    .contains(IpAddr::V4(v4))
+                })
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+}
+
+pub fn parse_cidrs(raw: &str) -> Vec<Cidr> {
+    raw.split(',')
+        .filter_map(|p| Cidr::parse(p))
+        .collect()
 }
 
 pub fn parse_allowed_ports(raw: &str) -> Option<HashSet<u16>> {
@@ -201,5 +277,18 @@ mod tests {
             "https://app.example.com"
         );
         assert_eq!(normalize_host("Proxy.Example.COM:443"), "proxy.example.com:443");
+    }
+
+    #[test]
+    fn cidr_parse_and_contains() {
+        let c = Cidr::parse("10.0.0.0/8").unwrap();
+        assert!(c.contains("10.1.2.3".parse().unwrap()));
+        assert!(!c.contains("11.0.0.1".parse().unwrap()));
+        let one = Cidr::parse("127.0.0.1").unwrap();
+        assert!(one.contains("127.0.0.1".parse().unwrap()));
+        assert!(!one.contains("127.0.0.2".parse().unwrap()));
+        let v6 = Cidr::parse("2001:db8::/32").unwrap();
+        assert!(v6.contains("2001:db8::1".parse().unwrap()));
+        assert!(!v6.contains("2001:db9::1".parse().unwrap()));
     }
 }
