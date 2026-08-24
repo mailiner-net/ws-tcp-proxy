@@ -71,6 +71,9 @@ is entirely server-side.
 * The TCP connect uses the filtered sockaddr; the name is not resolved again
   (DNS rebinding).
 
+Limits are **in-process**. Replicas do not share counters — pin to one
+instance or add an edge rate limit if you scale out.
+
 **Limits** (defaults in parentheses; `0` disables a numeric cap)
 
 * Global connections (`5000`)

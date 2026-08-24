@@ -413,6 +413,26 @@ fn metrics_router(state: Arc<ServerState>) -> Router {
     Router::new().route("/metrics", get(metrics_handler).with_state(state))
 }
 
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut sig) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            sig.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+}
+
 pub async fn run_proxy(listener: TcpListener, config: Config) -> Result<(), Error> {
     let limits = Arc::new(LimitState::new(config.limits.clone()));
     let metrics_bind = config.metrics_bind.clone();
@@ -430,7 +450,10 @@ pub async fn run_proxy(listener: TcpListener, config: Config) -> Result<(), Erro
                 Ok(mlistener) => {
                     info!(log, "Metrics listening"; "addr" => addr.as_str());
                     let app = metrics_router(metrics_state);
-                    if let Err(e) = axum::serve(mlistener, app).await {
+                    if let Err(e) = axum::serve(mlistener, app)
+                        .with_graceful_shutdown(shutdown_signal())
+                        .await
+                    {
                         error!(log, "Metrics server exited"; "error" => e.to_string());
                     }
                 }
@@ -450,6 +473,7 @@ pub async fn run_proxy(listener: TcpListener, config: Config) -> Result<(), Erro
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
     Ok(())
 }

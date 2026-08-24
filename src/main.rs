@@ -203,6 +203,16 @@ async fn main() -> Result<(), tokio::io::Error> {
         }
     }
 
+    if config.auth_mode == AuthMode::Public {
+        warn!(
+            DEFAULT_LOGGER.get().unwrap(),
+            "MAILINER_AUTH=public: this process is an open mail-port proxy. \
+             Per-IP limits are in-process only (they do not add up across replicas). \
+             Put TLS and a bot-capable edge in front, set MAILINER_ALLOWED_ORIGINS, \
+             and plan for credential-stuffing against the egress IP."
+        );
+    }
+
     if config.auth_mode == AuthMode::Paseto && config.secret_key.is_none() {
         if cfg!(debug_assertions) {
             warn!(
