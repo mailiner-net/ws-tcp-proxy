@@ -30,6 +30,7 @@ pub struct Config {
     pub ws_write_timeout: Duration,
     pub tcp_write_timeout: Duration,
     pub tcp_connect_timeout: Duration,
+    pub dns_timeout: Duration,
 
     pub dest: DestPolicy,
     pub limits: LimitsConfig,
@@ -59,6 +60,7 @@ impl Default for Config {
             ws_write_timeout: Duration::from_secs(30),
             tcp_write_timeout: Duration::from_secs(30),
             tcp_connect_timeout: Duration::from_secs(30),
+            dns_timeout: Duration::from_secs(5),
             dest: DestPolicy::default(),
             limits: LimitsConfig::default(),
             max_bytes_per_connection: 250 * 1024 * 1024,

@@ -114,6 +114,7 @@ Rejected attempts increment `rejects_total{reason=...}` (`bad_port`,
 | `MAILINER_LIMIT_IPV6_PREFIX` | `64` |
 | `MAILINER_MAX_TRACKED_IPS` | `50000` (`0` = no cap) |
 | `MAILINER_MAX_LIFETIME_SECS` | `86400` |
+| `MAILINER_DNS_TIMEOUT_SECS` | `5` |
 | `MAILINER_TRUST_FORWARDED_CLIENT_IP` | `0` |
 | `MAILINER_REQUIRE_PROTOCOL_PROBE` | `1` |
 | `METRICS_AUTH_TOKEN` | required in release |

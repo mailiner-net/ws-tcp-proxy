@@ -190,8 +190,23 @@ async fn proxy_handler(
         return reject(&log, limit_status(&e), RejectReason::from(e), limit_message(&e));
     }
 
-    let addrs = match dest::resolve_filtered(&remote, &state.config.dest).await {
+    let addrs = match dest::resolve_filtered(
+        &remote,
+        &state.config.dest,
+        state.config.dns_timeout,
+    )
+    .await
+    {
         Ok(a) => a,
+        Err(e) => {
+            return reject(&log, dest_status(&e), RejectReason::from(e), dest_message(&e));
+        }
+    };
+
+    // Dial before taking a live slot so a black-holed dest cannot pin
+    // a connection lease for the full connect timeout.
+    let tcp = match dest::connect_addrs(&addrs, state.config.tcp_connect_timeout).await {
+        Ok(s) => s,
         Err(e) => {
             return reject(&log, dest_status(&e), RejectReason::from(e), dest_message(&e));
         }
@@ -201,14 +216,6 @@ async fn proxy_handler(
         Ok(l) => l,
         Err(e) => {
             return reject(&log, limit_status(&e), RejectReason::from(e), limit_message(&e));
-        }
-    };
-
-    let tcp = match dest::connect_addrs(&addrs, state.config.tcp_connect_timeout).await {
-        Ok(s) => s,
-        Err(e) => {
-            drop(lease);
-            return reject(&log, dest_status(&e), RejectReason::from(e), dest_message(&e));
         }
     };
 

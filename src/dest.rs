@@ -268,6 +268,7 @@ pub fn check_policy(remote: &Remote, policy: &DestPolicy) -> Result<(), DestErro
 pub async fn resolve_filtered(
     remote: &Remote,
     policy: &DestPolicy,
+    dns_timeout: Duration,
 ) -> Result<Vec<SocketAddr>, DestError> {
     if let Some(ip) = remote.ip_literal {
         // Already checked in check_policy; still filter defensively.
@@ -277,8 +278,9 @@ pub async fn resolve_filtered(
         return Ok(vec![SocketAddr::new(ip, remote.port)]);
     }
 
-    let looked_up = tokio::net::lookup_host((remote.host.as_str(), remote.port))
+    let looked_up = timeout(dns_timeout, tokio::net::lookup_host((remote.host.as_str(), remote.port)))
         .await
+        .map_err(|_| DestError::Dns)?
         .map_err(|_| DestError::Dns)?;
 
     let addrs: Vec<SocketAddr> = looked_up
@@ -638,7 +640,9 @@ mod tests {
         // hostname, not a literal — policy check passes; resolve filters loopback.
         assert!(check_policy(&r, &p).is_ok());
         assert_eq!(
-            resolve_filtered(&r, &p).await.unwrap_err(),
+            resolve_filtered(&r, &p, Duration::from_secs(2))
+                .await
+                .unwrap_err(),
             DestError::PrivateIp
         );
     }
@@ -647,7 +651,9 @@ mod tests {
     async fn resolve_localhost_private_allowed() {
         let r = parse_remote("localhost:993").unwrap();
         let p = DestPolicy::unrestricted();
-        let addrs = resolve_filtered(&r, &p).await.unwrap();
+        let addrs = resolve_filtered(&r, &p, Duration::from_secs(2))
+            .await
+            .unwrap();
         assert!(addrs.iter().any(|a| a.ip().is_loopback()));
         assert!(addrs.iter().all(|a| a.port() == 993));
     }
