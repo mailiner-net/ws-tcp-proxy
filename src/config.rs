@@ -103,12 +103,12 @@ impl Config {
     pub fn public_safety_errors(&self) -> Vec<String> {
         let mut errors = Vec::new();
         if self.dest.allowed_ports.is_none() {
-            errors.push(
-                "MAILINER_ALLOWED_PORTS=any/* opens every TCP port".to_string(),
-            );
+            errors.push("MAILINER_ALLOWED_PORTS=any/* opens every TCP port".to_string());
         }
         if self.dest.allow_private_destinations {
-            errors.push("MAILINER_ALLOW_PRIVATE_DESTS=1 enables SSRF to RFC1918/loopback".to_string());
+            errors.push(
+                "MAILINER_ALLOW_PRIVATE_DESTS=1 enables SSRF to RFC1918/loopback".to_string(),
+            );
         }
         if self.dest.allow_ip_literals {
             errors.push("MAILINER_ALLOW_IP_LITERALS=1 allows raw IP destinations".to_string());
@@ -120,22 +120,25 @@ impl Config {
         }
         if self.trust_forwarded_client_ip && self.trusted_proxies.is_empty() {
             errors.push(
-                "MAILINER_TRUST_FORWARDED_CLIENT_IP=1 requires MAILINER_TRUSTED_PROXIES".to_string(),
+                "MAILINER_TRUST_FORWARDED_CLIENT_IP=1 requires MAILINER_TRUSTED_PROXIES"
+                    .to_string(),
             );
         }
         if self.auth_mode == AuthMode::Public
             && (self.allowed_origins.is_empty() || self.allowed_origins.contains("*"))
         {
-            errors.push(
-                "MAILINER_AUTH=public requires MAILINER_ALLOWED_ORIGINS (not *)".to_string(),
-            );
+            errors
+                .push("MAILINER_AUTH=public requires MAILINER_ALLOWED_ORIGINS (not *)".to_string());
         }
         let caps = [
             (
                 "MAILINER_MAX_GLOBAL_CONNECTIONS",
                 self.limits.max_global_connections == 0,
             ),
-            ("MAILINER_MAX_CONNS_PER_IP", self.limits.max_conns_per_ip == 0),
+            (
+                "MAILINER_MAX_CONNS_PER_IP",
+                self.limits.max_conns_per_ip == 0,
+            ),
             (
                 "MAILINER_CONNECTS_PER_IP_PER_MIN",
                 self.limits.connects_per_ip == 0,
@@ -148,10 +151,7 @@ impl Config {
                 "MAILINER_MAX_BYTES_PER_IP_PER_HOUR",
                 self.limits.max_bytes_per_ip == 0,
             ),
-            (
-                "MAILINER_MAX_LIFETIME_SECS",
-                self.max_lifetime.is_zero(),
-            ),
+            ("MAILINER_MAX_LIFETIME_SECS", self.max_lifetime.is_zero()),
         ];
         for (name, unlimited) in caps {
             if unlimited {
@@ -162,6 +162,7 @@ impl Config {
     }
 
     /// Loopback echo tests: no dest/rate/proto restrictions.
+    #[cfg(test)]
     pub fn for_tests() -> Self {
         Self {
             dest: DestPolicy::unrestricted(),
@@ -240,9 +241,7 @@ impl Cidr {
 }
 
 pub fn parse_cidrs(raw: &str) -> Vec<Cidr> {
-    raw.split(',')
-        .filter_map(|p| Cidr::parse(p))
-        .collect()
+    raw.split(',').filter_map(Cidr::parse).collect()
 }
 
 pub fn parse_allowed_ports(raw: &str) -> Option<HashSet<u16>> {
@@ -352,7 +351,10 @@ mod tests {
             normalize_origin("HTTPS://APP.EXAMPLE.COM"),
             "https://app.example.com"
         );
-        assert_eq!(normalize_host("Proxy.Example.COM:443"), "proxy.example.com:443");
+        assert_eq!(
+            normalize_host("Proxy.Example.COM:443"),
+            "proxy.example.com:443"
+        );
     }
 
     #[test]
@@ -380,8 +382,10 @@ mod tests {
 
     #[test]
     fn public_auth_requires_origin_allowlist() {
-        let mut c = Config::default();
-        c.auth_mode = AuthMode::Public;
+        let mut c = Config {
+            auth_mode: AuthMode::Public,
+            ..Config::default()
+        };
         assert!(c
             .public_safety_errors()
             .iter()

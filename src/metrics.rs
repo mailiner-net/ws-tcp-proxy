@@ -18,7 +18,7 @@ pub enum Error {
     Read,
     Send,
     Shutdown,
-    Timeout
+    Timeout,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
@@ -120,7 +120,7 @@ pub struct Metrics {
 
     pub rejects: Family<RejectLabels, Counter>,
 
-    process_start_time_seconds: Gauge
+    process_start_time_seconds: Gauge,
 }
 
 // bucket duration in seconds
@@ -135,7 +135,7 @@ impl Metrics {
             active_connections: Gauge::default(),
             ws_errors: Family::<ErrorLabels, Counter>::default(),
             tcp_errors: Family::<ErrorLabels, Counter>::default(),
-            connection_duration: Histogram::new(DURATION_BUCKETS.into_iter()),
+            connection_duration: Histogram::new(DURATION_BUCKETS),
             connections: Family::<ConnectionsLabels, Counter>::default(),
             rejects: Family::<RejectLabels, Counter>::default(),
 
@@ -182,7 +182,9 @@ impl Metrics {
         // Prometheus sidecar in GCP
         let now = SystemTime::now();
         let since_epoch = now.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-        metrics.process_start_time_seconds.set(since_epoch.as_secs() as i64);
+        metrics
+            .process_start_time_seconds
+            .set(since_epoch.as_secs() as i64);
 
         metrics
     }

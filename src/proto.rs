@@ -270,10 +270,7 @@ mod tests {
     fn sni_roundtrip() {
         let rec = client_hello_with_sni("imap.gmail.com");
         assert_eq!(tls_record_needed(&rec).unwrap(), 0);
-        assert_eq!(
-            parse_sni(&rec).unwrap().as_deref(),
-            Some("imap.gmail.com")
-        );
+        assert_eq!(parse_sni(&rec).unwrap().as_deref(), Some("imap.gmail.com"));
         assert!(validate_tls_client_hello(&rec, "imap.gmail.com", false).is_ok());
         assert!(validate_tls_client_hello(&rec, "IMAP.GMAIL.COM.", false).is_ok());
         assert_eq!(
@@ -322,7 +319,9 @@ mod tests {
 
     #[test]
     fn smtp_greeting() {
-        assert!(validate_greeting(b"220 mail.example.com ESMTP\r\n", ProbeKind::SmtpGreeting).is_ok());
+        assert!(
+            validate_greeting(b"220 mail.example.com ESMTP\r\n", ProbeKind::SmtpGreeting).is_ok()
+        );
         assert!(validate_greeting(b"220-mail.example.com\r\n", ProbeKind::SmtpGreeting).is_ok());
         assert_eq!(
             validate_greeting(b"* OK IMAP\r\n", ProbeKind::SmtpGreeting),

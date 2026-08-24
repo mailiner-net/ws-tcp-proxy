@@ -20,8 +20,6 @@ pub enum LimitError {
     ByteCap,
 }
 
-
-
 /// `0` on a cap means unlimited.
 #[derive(Debug, Clone)]
 pub struct LimitsConfig {
@@ -69,6 +67,7 @@ impl Default for LimitsConfig {
 
 impl LimitsConfig {
     /// High enough that tests exercising other behavior do not collide.
+    #[cfg(test)]
     pub fn unlimited() -> Self {
         Self {
             max_global_connections: 0,
@@ -98,11 +97,7 @@ pub fn limit_key(ip: IpAddr, v4_bits: u8, v6_bits: u8) -> IpAddr {
             if bits == 32 {
                 return ip;
             }
-            let mask = if bits == 0 {
-                0
-            } else {
-                !0u32 << (32 - bits)
-            };
+            let mask = if bits == 0 { 0 } else { !0u32 << (32 - bits) };
             IpAddr::V4(Ipv4Addr::from(u32::from(v4) & mask))
         }
         IpAddr::V6(v6) => {
@@ -113,11 +108,7 @@ pub fn limit_key(ip: IpAddr, v4_bits: u8, v6_bits: u8) -> IpAddr {
             if bits == 128 {
                 return ip;
             }
-            let mask = if bits == 0 {
-                0
-            } else {
-                !0u128 << (128 - bits)
-            };
+            let mask = if bits == 0 { 0 } else { !0u128 << (128 - bits) };
             IpAddr::V6(Ipv6Addr::from(u128::from(v6) & mask))
         }
     }
@@ -272,7 +263,11 @@ impl LimitState {
     }
 
     /// Reserve a live connection slot. Pair with [`ConnectionLease`].
-    pub fn acquire(self: &Arc<Self>, ip: IpAddr, dest: &str) -> Result<ConnectionLease, LimitError> {
+    pub fn acquire(
+        self: &Arc<Self>,
+        ip: IpAddr,
+        dest: &str,
+    ) -> Result<ConnectionLease, LimitError> {
         let mut g = self.lock();
         let ip = limit_key(ip, g.cfg.ipv4_prefix, g.cfg.ipv6_prefix);
         g.maybe_gc(Instant::now());
@@ -495,7 +490,12 @@ mod tests {
             LimitError::PerIpFull
         );
         // A different /64 is independent.
-        assert!(state.acquire(IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 1, 0, 0, 0, 0, 1)), "imap.example:993").is_ok());
+        assert!(state
+            .acquire(
+                IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 1, 0, 0, 0, 0, 1)),
+                "imap.example:993"
+            )
+            .is_ok());
     }
 
     #[test]

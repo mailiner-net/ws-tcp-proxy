@@ -74,10 +74,8 @@ fn apply_env(config: &mut Config) {
         "MAILINER_ALLOW_PRIVATE_DESTS",
         config.dest.allow_private_destinations,
     );
-    config.dest.allow_ip_literals = env_bool(
-        "MAILINER_ALLOW_IP_LITERALS",
-        config.dest.allow_ip_literals,
-    );
+    config.dest.allow_ip_literals =
+        env_bool("MAILINER_ALLOW_IP_LITERALS", config.dest.allow_ip_literals);
     config.trust_forwarded_client_ip = env_bool(
         "MAILINER_TRUST_FORWARDED_CLIENT_IP",
         config.trust_forwarded_client_ip,
@@ -101,14 +99,9 @@ fn apply_env(config: &mut Config) {
     );
     config.max_lifetime = env_secs("MAILINER_MAX_LIFETIME_SECS", config.max_lifetime);
     config.dns_timeout = env_secs("MAILINER_DNS_TIMEOUT_SECS", config.dns_timeout);
-    config.ws_max_message_bytes = env_usize(
-        "MAILINER_WS_MAX_MESSAGE_BYTES",
-        config.ws_max_message_bytes,
-    );
-    config.ws_max_frame_bytes = env_usize(
-        "MAILINER_WS_MAX_FRAME_BYTES",
-        config.ws_max_frame_bytes,
-    );
+    config.ws_max_message_bytes =
+        env_usize("MAILINER_WS_MAX_MESSAGE_BYTES", config.ws_max_message_bytes);
+    config.ws_max_frame_bytes = env_usize("MAILINER_WS_MAX_FRAME_BYTES", config.ws_max_frame_bytes);
     config.paseto_max_ttl = env_secs("MAILINER_PASETO_MAX_TTL_SECS", config.paseto_max_ttl);
     config.limits.max_global_connections = env_usize(
         "MAILINER_MAX_GLOBAL_CONNECTIONS",
@@ -146,26 +139,22 @@ fn apply_env(config: &mut Config) {
         config.limits.ipv6_prefix as usize,
     );
     config.limits.ipv6_prefix = v6p.clamp(0, 128) as u8;
-    config.limits.max_tracked_ips = env_usize(
-        "MAILINER_MAX_TRACKED_IPS",
-        config.limits.max_tracked_ips,
-    );
+    config.limits.max_tracked_ips =
+        env_usize("MAILINER_MAX_TRACKED_IPS", config.limits.max_tracked_ips);
 }
 
 fn parse_metrics_auth_key() -> Option<String> {
-    std::env::var(METRICS_AUTH_TOKEN)
-        .ok()
-        .or_else(|| {
-            if cfg!(debug_assertions) {
-                warn!(
-                    DEFAULT_LOGGER.get().unwrap(),
-                    "{} is not set, metrics will be public!", METRICS_AUTH_TOKEN
-                );
-            } else {
-                panic!("{} is not set in production build!", METRICS_AUTH_TOKEN);
-            }
-            None
-        })
+    std::env::var(METRICS_AUTH_TOKEN).ok().or_else(|| {
+        if cfg!(debug_assertions) {
+            warn!(
+                DEFAULT_LOGGER.get().unwrap(),
+                "{} is not set, metrics will be public!", METRICS_AUTH_TOKEN
+            );
+        } else {
+            panic!("{} is not set in production build!", METRICS_AUTH_TOKEN);
+        }
+        None
+    })
 }
 
 #[tokio::main]
@@ -173,14 +162,19 @@ async fn main() -> Result<(), tokio::io::Error> {
     let args = Args::parse();
 
     init_logging(parse_log_level(&args.log_level));
-    info!(DEFAULT_LOGGER.get().unwrap(), "Log level set to {}", args.log_level);
+    info!(
+        DEFAULT_LOGGER.get().unwrap(),
+        "Log level set to {}", args.log_level
+    );
 
     let mut config = Config {
         bind_addr: args.bind,
         listen_port: args.port,
         secret_key: parse_secret_key(),
         metrics_auth_key: parse_metrics_auth_key(),
-        metrics_bind: std::env::var("MAILINER_METRICS_ADDR").ok().filter(|s| !s.is_empty()),
+        metrics_bind: std::env::var("MAILINER_METRICS_ADDR")
+            .ok()
+            .filter(|s| !s.is_empty()),
         ..Config::default()
     };
     apply_env(&mut config);
@@ -226,7 +220,8 @@ async fn main() -> Result<(), tokio::io::Error> {
         }
     }
 
-    let listener = TcpListener::bind(format!("{}:{}", config.bind_addr, config.listen_port)).await?;
+    let listener =
+        TcpListener::bind(format!("{}:{}", config.bind_addr, config.listen_port)).await?;
     info!(
         DEFAULT_LOGGER.get().unwrap(),
         "WS<->TCP Proxy listening on {}:{}", config.bind_addr, config.listen_port

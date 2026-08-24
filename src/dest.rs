@@ -21,8 +21,6 @@ pub enum DestError {
     Connect,
 }
 
-
-
 #[derive(Debug, Clone)]
 pub struct DestPolicy {
     /// `None` = any port (tests / emergency). Production sets the mail ports.
@@ -42,6 +40,7 @@ impl Default for DestPolicy {
 }
 
 impl DestPolicy {
+    #[cfg(test)]
     pub fn unrestricted() -> Self {
         Self {
             allowed_ports: None,
@@ -136,9 +135,7 @@ pub fn parse_remote(raw: &str) -> Result<Remote, DestError> {
 }
 
 pub fn normalize_hostname(host: &str) -> String {
-    host.trim()
-        .trim_end_matches('.')
-        .to_ascii_lowercase()
+    host.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
 /// DNS hostname max length (RFC 1035), excluding a trailing root dot.
@@ -215,10 +212,7 @@ fn parse_ipv4_component(s: &str) -> Option<u32> {
     if s.is_empty() {
         return None;
     }
-    if let Some(hex) = s
-        .strip_prefix("0x")
-        .or_else(|| s.strip_prefix("0X"))
-    {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
@@ -278,10 +272,13 @@ pub async fn resolve_filtered(
         return Ok(vec![SocketAddr::new(ip, remote.port)]);
     }
 
-    let looked_up = timeout(dns_timeout, tokio::net::lookup_host((remote.host.as_str(), remote.port)))
-        .await
-        .map_err(|_| DestError::Dns)?
-        .map_err(|_| DestError::Dns)?;
+    let looked_up = timeout(
+        dns_timeout,
+        tokio::net::lookup_host((remote.host.as_str(), remote.port)),
+    )
+    .await
+    .map_err(|_| DestError::Dns)?
+    .map_err(|_| DestError::Dns)?;
 
     let addrs: Vec<SocketAddr> = looked_up
         .filter(|a| policy.allow_private_destinations || is_global_unicast(a.ip()))

@@ -16,8 +16,8 @@ use crate::dest::Remote;
 use crate::limits::{ConnectionLease, LimitState};
 use crate::metrics::{ScopeDuration, ScopeGauge, METRICS};
 use crate::proto::{
-    greeting_complete, max_greeting_bytes, probe_for_port, tls_record_needed,
-    validate_greeting, validate_tls_client_hello, ProbeKind,
+    greeting_complete, max_greeting_bytes, probe_for_port, tls_record_needed, validate_greeting,
+    validate_tls_client_hello, ProbeKind,
 };
 use crate::{
     config::Config,
@@ -127,11 +127,7 @@ impl Connection {
         if n == 0 {
             return Ok(());
         }
-        if self
-            .limits
-            .add_bytes(self.client_ip, n as u64)
-            .is_err()
-        {
+        if self.limits.add_bytes(self.client_ip, n as u64).is_err() {
             METRICS.inc_reject(RejectReason::ByteCap);
             info!(self.log, "Per-IP byte cap exceeded");
             return Err(());
@@ -386,11 +382,9 @@ impl Connection {
             }
         }
 
-        if let Err(e) = validate_tls_client_hello(
-            &hello,
-            &self.remote.host,
-            self.remote.ip_literal.is_some(),
-        ) {
+        if let Err(e) =
+            validate_tls_client_hello(&hello, &self.remote.host, self.remote.ip_literal.is_some())
+        {
             info!(self.log, "TLS ClientHello rejected"; "error" => e.as_str());
             return Err(RejectReason::Proto);
         }

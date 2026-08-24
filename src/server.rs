@@ -157,10 +157,7 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 
 /// Token from `Sec-WebSocket-Protocol`: `bearer.<token>` or a raw `v4.local.*`.
 fn protocol_token(headers: &HeaderMap) -> Option<&str> {
-    let raw = headers
-        .get(header::SEC_WEBSOCKET_PROTOCOL)?
-        .to_str()
-        .ok()?;
+    let raw = headers.get(header::SEC_WEBSOCKET_PROTOCOL)?.to_str().ok()?;
     raw.split(',').map(str::trim).find_map(|p| {
         p.strip_prefix("bearer.")
             .filter(|t| !t.is_empty())
@@ -169,10 +166,7 @@ fn protocol_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 fn offered_auth_protocol(headers: &HeaderMap) -> Option<String> {
-    let raw = headers
-        .get(header::SEC_WEBSOCKET_PROTOCOL)?
-        .to_str()
-        .ok()?;
+    let raw = headers.get(header::SEC_WEBSOCKET_PROTOCOL)?.to_str().ok()?;
     raw.split(',')
         .map(str::trim)
         .find(|p| p.starts_with("bearer.") || p.starts_with("v4.local."))
@@ -210,10 +204,7 @@ fn validate_token(
     }
 
     if secret_key.is_none() {
-        crit!(
-            log,
-            "MAILINER_PASETO_SECRET is not set, rejecting client!"
-        );
+        crit!(log, "MAILINER_PASETO_SECRET is not set, rejecting client!");
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
@@ -249,8 +240,8 @@ fn validate_token(
             .get("exp")
             .and_then(|v| v.as_str())
             .ok_or(StatusCode::UNAUTHORIZED)?;
-        let datetime = chrono::DateTime::parse_from_rfc3339(exp)
-            .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        let datetime =
+            chrono::DateTime::parse_from_rfc3339(exp).map_err(|_| StatusCode::UNAUTHORIZED)?;
         let remaining = datetime.signed_duration_since(chrono::Utc::now());
         if remaining.to_std().map(|d| d > max_ttl).unwrap_or(true) {
             return Err(StatusCode::UNAUTHORIZED);
@@ -310,45 +301,70 @@ async fn proxy_handler(
     let remote = match dest::parse_remote(&query.remote) {
         Ok(r) => r,
         Err(e) => {
-            return reject(&log, dest_status(&e), RejectReason::from(e), dest_message(&e));
+            return reject(
+                &log,
+                dest_status(&e),
+                RejectReason::from(e),
+                dest_message(&e),
+            );
         }
     };
 
     if let Err(e) = dest::check_policy(&remote, &state.config.dest) {
-        return reject(&log, dest_status(&e), RejectReason::from(e), dest_message(&e));
+        return reject(
+            &log,
+            dest_status(&e),
+            RejectReason::from(e),
+            dest_message(&e),
+        );
     }
 
     let dest_key = remote.dest_key();
     if let Err(e) = state.limits.record_attempt(client, &dest_key) {
-        return reject(&log, limit_status(&e), RejectReason::from(e), limit_message(&e));
+        return reject(
+            &log,
+            limit_status(&e),
+            RejectReason::from(e),
+            limit_message(&e),
+        );
     }
 
-    let addrs = match dest::resolve_filtered(
-        &remote,
-        &state.config.dest,
-        state.config.dns_timeout,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => {
-            return reject(&log, dest_status(&e), RejectReason::from(e), dest_message(&e));
-        }
-    };
+    let addrs =
+        match dest::resolve_filtered(&remote, &state.config.dest, state.config.dns_timeout).await {
+            Ok(a) => a,
+            Err(e) => {
+                return reject(
+                    &log,
+                    dest_status(&e),
+                    RejectReason::from(e),
+                    dest_message(&e),
+                );
+            }
+        };
 
     // Dial before taking a live slot so a black-holed dest cannot pin
     // a connection lease for the full connect timeout.
     let tcp = match dest::connect_addrs(&addrs, state.config.tcp_connect_timeout).await {
         Ok(s) => s,
         Err(e) => {
-            return reject(&log, dest_status(&e), RejectReason::from(e), dest_message(&e));
+            return reject(
+                &log,
+                dest_status(&e),
+                RejectReason::from(e),
+                dest_message(&e),
+            );
         }
     };
 
     let lease = match state.limits.acquire(client, &dest_key) {
         Ok(l) => l,
         Err(e) => {
-            return reject(&log, limit_status(&e), RejectReason::from(e), limit_message(&e));
+            return reject(
+                &log,
+                limit_status(&e),
+                RejectReason::from(e),
+                limit_message(&e),
+            );
         }
     };
 
@@ -368,17 +384,9 @@ async fn proxy_handler(
         error!(fail_log, "Failed to upgrade WebSocket connection"; "error" => error.to_string());
     })
     .on_upgrade(move |socket| async move {
-        Connection::new(
-            remote,
-            client,
-            tcp,
-            lease,
-            limits,
-            upgrade_log,
-            config,
-        )
-        .run(socket)
-        .await;
+        Connection::new(remote, client, tcp, lease, limits, upgrade_log, config)
+            .run(socket)
+            .await;
     })
 }
 
@@ -567,9 +575,7 @@ mod test {
 
     fn upgrade_status(err: tokio_websockets::Error) -> u16 {
         match err {
-            tokio_websockets::Error::Upgrade(upgrade::Error::DidNotSwitchProtocols(code)) => {
-                code
-            }
+            tokio_websockets::Error::Upgrade(upgrade::Error::DidNotSwitchProtocols(code)) => code,
             other => panic!("Unexpected error: {:?}", other),
         }
     }
