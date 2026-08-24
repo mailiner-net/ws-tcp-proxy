@@ -78,9 +78,30 @@ pub struct RejectLabels {
     pub reason: RejectReason,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
+pub enum PortClass {
+    Imap,
+    Imaps,
+    Smtps,
+    Submission,
+    Other,
+}
+
+impl PortClass {
+    pub fn from_port(port: u16) -> Self {
+        match port {
+            143 => PortClass::Imap,
+            993 => PortClass::Imaps,
+            465 => PortClass::Smtps,
+            587 => PortClass::Submission,
+            _ => PortClass::Other,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct ConnectionsLabels {
-    pub remote: String,
+    pub port: PortClass,
 }
 
 pub struct Metrics {
@@ -141,7 +162,7 @@ impl Metrics {
         );
         metrics.registry.register(
             "connections",
-            "Number of connections to remotes",
+            "Number of connections by well-known mail port class",
             metrics.connections.clone(),
         );
         metrics.registry.register(

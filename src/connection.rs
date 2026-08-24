@@ -150,7 +150,7 @@ impl Connection {
         METRICS
             .connections
             .get_or_create(&ConnectionsLabels {
-                remote: dest_key.clone(),
+                port: metrics::PortClass::from_port(self.remote.port),
             })
             .inc();
 
