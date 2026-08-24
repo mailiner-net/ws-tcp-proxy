@@ -91,6 +91,14 @@ fn apply_env(config: &mut Config) {
     );
     config.max_lifetime = env_secs("MAILINER_MAX_LIFETIME_SECS", config.max_lifetime);
     config.dns_timeout = env_secs("MAILINER_DNS_TIMEOUT_SECS", config.dns_timeout);
+    config.ws_max_message_bytes = env_usize(
+        "MAILINER_WS_MAX_MESSAGE_BYTES",
+        config.ws_max_message_bytes,
+    );
+    config.ws_max_frame_bytes = env_usize(
+        "MAILINER_WS_MAX_FRAME_BYTES",
+        config.ws_max_frame_bytes,
+    );
     config.limits.max_global_connections = env_usize(
         "MAILINER_MAX_GLOBAL_CONNECTIONS",
         config.limits.max_global_connections,

@@ -283,7 +283,9 @@ async fn proxy_handler(
     let upgrade_log = log.clone();
     let config = Arc::clone(&state.config);
     let limits = Arc::clone(&state.limits);
-    ws.on_failed_upgrade(move |error: axum::Error| {
+    ws.max_message_size(state.config.ws_max_message_bytes)
+        .max_frame_size(state.config.ws_max_frame_bytes)
+        .on_failed_upgrade(move |error: axum::Error| {
         METRICS.inc_ws_error(metrics::Error::Handshake);
         error!(fail_log, "Failed to upgrade WebSocket connection"; "error" => error.to_string());
     })

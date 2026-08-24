@@ -53,6 +53,10 @@ pub struct Config {
     /// If non-empty, the HTTP `Host` header must match one of these
     /// values (case-insensitive, optional `:port`).
     pub allowed_hosts: HashSet<String>,
+    /// Max WebSocket message size (tungstenite default is 64 MiB).
+    pub ws_max_message_bytes: usize,
+    /// Max WebSocket frame size (tungstenite default is 16 MiB).
+    pub ws_max_frame_bytes: usize,
 }
 
 impl Default for Config {
@@ -80,6 +84,8 @@ impl Default for Config {
             require_protocol_probe: true,
             allowed_origins: HashSet::new(),
             allowed_hosts: HashSet::new(),
+            ws_max_message_bytes: 1024 * 1024,
+            ws_max_frame_bytes: 256 * 1024,
         }
     }
 }

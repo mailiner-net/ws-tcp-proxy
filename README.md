@@ -126,6 +126,8 @@ Rejected attempts increment `rejects_total{reason=...}` (`bad_port`,
 | `MAILINER_MAX_TRACKED_IPS` | `50000` (`0` = no cap) |
 | `MAILINER_MAX_LIFETIME_SECS` | `86400` |
 | `MAILINER_DNS_TIMEOUT_SECS` | `5` |
+| `MAILINER_WS_MAX_MESSAGE_BYTES` | `1048576` |
+| `MAILINER_WS_MAX_FRAME_BYTES` | `262144` |
 | `MAILINER_TRUST_FORWARDED_CLIENT_IP` | `0` |
 | `MAILINER_TRUSTED_PROXIES` | empty (comma-separated CIDRs; required for forwarded-IP trust) |
 | `MAILINER_REQUIRE_PROTOCOL_PROBE` | `1` |
