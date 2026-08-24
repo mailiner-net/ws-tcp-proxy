@@ -110,8 +110,21 @@ pub fn parse_remote(raw: &str) -> Result<Remote, DestError> {
         });
     }
 
+    // glibc getaddrinfo accepts dword / octal / hex / short IPv4 forms that
+    // Rust's IpAddr parser rejects. Treat them as literals so the IP-literal
+    // and private-IP policies still apply (otherwise `134744072:993` is a
+    // "hostname" that resolves to 8.8.8.8).
+    if let Some(v4) = parse_loose_ipv4(host_raw) {
+        let ip = IpAddr::V4(v4);
+        return Ok(Remote {
+            host: ip_canonical(ip),
+            port,
+            ip_literal: Some(ip),
+        });
+    }
+
     let host = normalize_hostname(host_raw);
-    if host.is_empty() {
+    if !is_valid_dns_hostname(&host) {
         return Err(DestError::InvalidRemote);
     }
 
@@ -126,6 +139,101 @@ pub fn normalize_hostname(host: &str) -> String {
     host.trim()
         .trim_end_matches('.')
         .to_ascii_lowercase()
+}
+
+/// DNS hostname max length (RFC 1035), excluding a trailing root dot.
+const MAX_HOSTNAME_LEN: usize = 253;
+const MAX_DNS_LABEL_LEN: usize = 63;
+
+/// True if `host` is a plausible DNS name (LDH labels). Used to reject
+/// spaces, slashes, NULs, and arbitrarily long attacker-controlled strings
+/// before they are stored in limit maps or sent to the resolver.
+pub fn is_valid_dns_hostname(host: &str) -> bool {
+    if host.is_empty() || host.len() > MAX_HOSTNAME_LEN {
+        return false;
+    }
+    if host.starts_with('.') || host.contains("..") {
+        return false;
+    }
+    host.split('.').all(is_valid_dns_label)
+}
+
+fn is_valid_dns_label(label: &str) -> bool {
+    let len = label.len();
+    if len == 0 || len > MAX_DNS_LABEL_LEN {
+        return false;
+    }
+    let bytes = label.as_bytes();
+    if !bytes[0].is_ascii_alphanumeric() || !bytes[len - 1].is_ascii_alphanumeric() {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
+}
+
+/// inet_aton-style IPv4: 1–4 dotted parts, each decimal, `0`-octal, or `0x`-hex.
+/// Matches the forms glibc `getaddrinfo` will turn into an A record without DNS.
+fn parse_loose_ipv4(s: &str) -> Option<Ipv4Addr> {
+    if s.is_empty() || s.len() > 32 {
+        return None;
+    }
+    let parts: Vec<&str> = s.split('.').collect();
+    if !(1..=4).contains(&parts.len()) || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    let mut nums = [0u32; 4];
+    for (i, part) in parts.iter().enumerate() {
+        nums[i] = parse_ipv4_component(part)?;
+    }
+    let addr = match parts.len() {
+        1 => nums[0],
+        2 => {
+            if nums[0] > 0xff || nums[1] > 0x00ff_ffff {
+                return None;
+            }
+            (nums[0] << 24) | nums[1]
+        }
+        3 => {
+            if nums[0] > 0xff || nums[1] > 0xff || nums[2] > 0xffff {
+                return None;
+            }
+            (nums[0] << 24) | (nums[1] << 16) | nums[2]
+        }
+        4 => {
+            if nums.iter().any(|n| *n > 0xff) {
+                return None;
+            }
+            (nums[0] << 24) | (nums[1] << 16) | (nums[2] << 8) | nums[3]
+        }
+        _ => return None,
+    };
+    Some(Ipv4Addr::from(addr))
+}
+
+fn parse_ipv4_component(s: &str) -> Option<u32> {
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(hex) = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+    {
+        if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        return u32::from_str_radix(hex, 16).ok();
+    }
+    if s.len() > 1 && s.starts_with('0') {
+        if !s.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+            return None;
+        }
+        return u32::from_str_radix(s, 8).ok();
+    }
+    if !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
 }
 
 fn ip_canonical(ip: IpAddr) -> String {
@@ -344,6 +452,61 @@ mod tests {
             parse_remote("imap.gmail.com:0"),
             Err(DestError::InvalidRemote)
         );
+    }
+
+    #[test]
+    fn parse_loose_ipv4_forms_as_literals() {
+        let cases = [
+            ("134744072:993", "8.8.8.8"),
+            ("0x08080808:993", "8.8.8.8"),
+            ("0X8.8.8.8:993", "8.8.8.8"),
+            ("8.8.8:993", "8.8.0.8"),
+            ("1.2:993", "1.0.0.2"),
+            ("127.1:993", "127.0.0.1"),
+            ("0177.0.0.1:993", "127.0.0.1"),
+            ("0x7f.0.0.1:993", "127.0.0.1"),
+            ("0:993", "0.0.0.0"),
+            ("123:993", "0.0.0.123"),
+        ];
+        for (raw, canon) in cases {
+            let r = parse_remote(raw).expect(raw);
+            assert_eq!(r.host, canon, "{raw}");
+            assert_eq!(r.ip_literal.unwrap().to_string(), canon, "{raw}");
+        }
+    }
+
+    #[test]
+    fn default_policy_rejects_loose_ipv4_literals() {
+        let p = DestPolicy::default();
+        for raw in ["134744072:993", "127.1:993", "0x08080808:993", "8.8.8:993"] {
+            let r = parse_remote(raw).unwrap();
+            assert_eq!(check_policy(&r, &p), Err(DestError::IpLiteral), "{raw}");
+        }
+    }
+
+    #[test]
+    fn parse_rejects_invalid_hostnames() {
+        for raw in [
+            "has space.com:993",
+            "has/slash.com:993",
+            "has@at.com:993",
+            "-leading-hyphen.com:993",
+            "trailing-hyphen-.com:993",
+            "a..b.com:993",
+            &format!("{}.com:993", "a".repeat(64)),
+            &format!("{}:993", format!("{}.", "a".repeat(50)).repeat(6)),
+        ] {
+            assert_eq!(parse_remote(raw), Err(DestError::InvalidRemote), "{raw}");
+        }
+    }
+
+    #[test]
+    fn parse_accepts_punycode_and_localhost() {
+        let r = parse_remote("xn--mnchen-3ya.de:993").unwrap();
+        assert_eq!(r.host, "xn--mnchen-3ya.de");
+        assert!(r.ip_literal.is_none());
+        let r = parse_remote("localhost:993").unwrap();
+        assert_eq!(r.host, "localhost");
     }
 
     #[test]

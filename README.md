@@ -57,7 +57,9 @@ is entirely server-side.
 **Destination policy**
 
 * Ports `143`, `993`, `465`, `587` only (not `25`).
-* Hostnames only by default — raw IP literals are rejected.
+* Hostnames only by default — raw IP literals are rejected (including
+  dword / hex / octal / short IPv4 forms that `getaddrinfo` would accept).
+  Hostnames must be DNS LDH labels, at most 253 bytes.
 * After DNS, only globally routable unicast addresses are dialed (loopback,
   RFC1918, link-local, CGNAT, ULA, metadata, etc. are rejected).
 * The TCP connect uses the filtered sockaddr; the name is not resolved again
