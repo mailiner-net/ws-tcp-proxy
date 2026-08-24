@@ -61,7 +61,8 @@ is entirely server-side.
   dword / hex / octal / short IPv4 forms that `getaddrinfo` would accept).
   Hostnames must be DNS LDH labels, at most 253 bytes.
 * After DNS, only globally routable unicast addresses are dialed (loopback,
-  RFC1918, link-local, CGNAT, ULA, metadata, etc. are rejected).
+  RFC1918, link-local, CGNAT, ULA, metadata, Teredo, NAT64/6to4 that embed a
+  non-global IPv4, etc. are rejected).
 * The TCP connect uses the filtered sockaddr; the name is not resolved again
   (DNS rebinding).
 

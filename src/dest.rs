@@ -349,20 +349,8 @@ fn is_global_v4(ip: Ipv4Addr) -> bool {
 }
 
 fn is_global_v6(ip: Ipv6Addr) -> bool {
-    if let Some(v4) = ip.to_ipv4_mapped() {
+    if let Some(v4) = embedded_ipv4(ip) {
         return is_global_v4(v4);
-    }
-    // Deprecated IPv4-compatible ::x.x.x.x (not mapped).
-    if let Some(v4) = ip.to_ipv4() {
-        if ip.segments()[0] == 0
-            && ip.segments()[1] == 0
-            && ip.segments()[2] == 0
-            && ip.segments()[3] == 0
-            && ip.segments()[4] == 0
-            && ip.segments()[5] == 0
-        {
-            return is_global_v4(v4);
-        }
     }
     if ip.is_unspecified()
         || ip.is_loopback()
@@ -370,6 +358,10 @@ fn is_global_v6(ip: Ipv6Addr) -> bool {
         || ip.is_unicast_link_local()
         || ip.is_unique_local()
     {
+        return false;
+    }
+    // IETF protocol assignments 2001::/23 (Teredo 2001::/32, ORCHID, …).
+    if ipv6_in(ip, Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0), 23) {
         return false;
     }
     // Documentation 2001:db8::/32
@@ -380,7 +372,44 @@ fn is_global_v6(ip: Ipv6Addr) -> bool {
     if ipv6_in(ip, Ipv6Addr::new(0x0100, 0, 0, 0, 0, 0, 0, 0), 64) {
         return false;
     }
+    // NAT64 local-use 64:ff9b:1::/48 (well-known /96 is handled via embedded_ipv4).
+    if ipv6_in(ip, Ipv6Addr::new(0x64, 0xff9b, 1, 0, 0, 0, 0, 0), 48) {
+        return false;
+    }
     true
+}
+
+/// IPv4 embedded in IPv6: mapped (`::ffff:x.x.x.x`), compatible (`::x.x.x.x`),
+/// SIIT translated (`64:ff9b::x.x.x.x`), 6to4 (`2002:xxyy:xxzz::`), or
+/// NAT64 well-known / local-use prefixes.
+fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return Some(v4);
+    }
+    let s = ip.segments();
+    // Deprecated IPv4-compatible ::x.x.x.x (not mapped).
+    if s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0 {
+        return ip.to_ipv4();
+    }
+    // NAT64 well-known 64:ff9b::/96
+    if s[0] == 0x64 && s[1] == 0xff9b && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0 {
+        return Some(Ipv4Addr::new(
+            (s[6] >> 8) as u8,
+            s[6] as u8,
+            (s[7] >> 8) as u8,
+            s[7] as u8,
+        ));
+    }
+    // 6to4 2002:V4ADDR::/48
+    if s[0] == 0x2002 {
+        return Some(Ipv4Addr::new(
+            (s[1] >> 8) as u8,
+            s[1] as u8,
+            (s[2] >> 8) as u8,
+            s[2] as u8,
+        ));
+    }
+    None
 }
 
 fn ipv4_in(ip: Ipv4Addr, prefix: Ipv4Addr, bits: u8) -> bool {
@@ -589,6 +618,17 @@ mod tests {
         assert!(!is_global_unicast("2001:db8::1".parse().unwrap()));
         assert!(!is_global_unicast("::ffff:10.0.0.1".parse().unwrap()));
         assert!(is_global_unicast("2001:4860:4860::8888".parse().unwrap()));
+
+        // Teredo / ORCHID (2001::/23)
+        assert!(!is_global_unicast("2001::1".parse().unwrap()));
+        // NAT64 well-known prefix embedding RFC1918 / public IPv4
+        assert!(!is_global_unicast("64:ff9b::a00:1".parse().unwrap())); // 10.0.0.1
+        assert!(!is_global_unicast("64:ff9b::7f00:1".parse().unwrap())); // 127.0.0.1
+        assert!(is_global_unicast("64:ff9b::808:808".parse().unwrap())); // 8.8.8.8
+        assert!(!is_global_unicast("64:ff9b:1::1".parse().unwrap()));
+        // 6to4 embedding RFC1918 / public IPv4
+        assert!(!is_global_unicast("2002:0a00:0001::1".parse().unwrap())); // 10.0.0.1
+        assert!(is_global_unicast("2002:0808:0808::1".parse().unwrap())); // 8.8.8.8
     }
 
     #[tokio::test]
