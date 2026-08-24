@@ -104,6 +104,16 @@ fn apply_env(config: &mut Config) {
         "MAILINER_MAX_BYTES_PER_IP_PER_HOUR",
         config.limits.max_bytes_per_ip,
     );
+    let v4p = env_usize(
+        "MAILINER_LIMIT_IPV4_PREFIX",
+        config.limits.ipv4_prefix as usize,
+    );
+    config.limits.ipv4_prefix = v4p.clamp(0, 32) as u8;
+    let v6p = env_usize(
+        "MAILINER_LIMIT_IPV6_PREFIX",
+        config.limits.ipv6_prefix as usize,
+    );
+    config.limits.ipv6_prefix = v6p.clamp(0, 128) as u8;
 }
 
 fn parse_metrics_auth_key() -> Option<String> {

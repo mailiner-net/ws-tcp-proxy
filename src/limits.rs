@@ -5,7 +5,7 @@
 //! an accepted session and released on drop.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -37,6 +37,11 @@ pub struct LimitsConfig {
     /// Combined up+down bytes per source IP over [`Self::bytes_window`].
     pub max_bytes_per_ip: u64,
     pub bytes_window: Duration,
+    /// IPv4 prefix length used as the limit key (`32` = one address).
+    pub ipv4_prefix: u8,
+    /// IPv6 prefix length used as the limit key (`64` so a /64 cannot
+    /// mint a fresh budget per address).
+    pub ipv6_prefix: u8,
 }
 
 impl Default for LimitsConfig {
@@ -53,6 +58,8 @@ impl Default for LimitsConfig {
             global_connects_window: Duration::from_secs(1),
             max_bytes_per_ip: 1024 * 1024 * 1024,
             bytes_window: Duration::from_secs(3600),
+            ipv4_prefix: 32,
+            ipv6_prefix: 64,
         }
     }
 }
@@ -72,6 +79,42 @@ impl LimitsConfig {
             global_connects_window: Duration::from_secs(1),
             max_bytes_per_ip: 0,
             bytes_window: Duration::from_secs(3600),
+            ipv4_prefix: 32,
+            ipv6_prefix: 64,
+        }
+    }
+}
+
+/// Mask `ip` to the configured prefix so many addresses in one network
+/// share a single budget. IPv4-mapped IPv6 is treated as IPv4.
+pub fn limit_key(ip: IpAddr, v4_bits: u8, v6_bits: u8) -> IpAddr {
+    match ip {
+        IpAddr::V4(v4) => {
+            let bits = v4_bits.min(32);
+            if bits == 32 {
+                return ip;
+            }
+            let mask = if bits == 0 {
+                0
+            } else {
+                !0u32 << (32 - bits)
+            };
+            IpAddr::V4(Ipv4Addr::from(u32::from(v4) & mask))
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return limit_key(IpAddr::V4(v4), v4_bits, v6_bits);
+            }
+            let bits = v6_bits.min(128);
+            if bits == 128 {
+                return ip;
+            }
+            let mask = if bits == 0 {
+                0
+            } else {
+                !0u128 << (128 - bits)
+            };
+            IpAddr::V6(Ipv6Addr::from(u128::from(v6) & mask))
         }
     }
 }
@@ -162,6 +205,7 @@ impl LimitState {
     /// Count a connect *attempt* (after dest policy) toward rate / diversity.
     pub fn record_attempt(&self, ip: IpAddr, dest: &str) -> Result<(), LimitError> {
         let mut g = self.inner.lock().expect("limits mutex poisoned");
+        let ip = limit_key(ip, g.cfg.ipv4_prefix, g.cfg.ipv6_prefix);
         let now = Instant::now();
         g.prune_global(now);
 
@@ -193,6 +237,7 @@ impl LimitState {
     /// Reserve a live connection slot. Pair with [`ConnectionLease`].
     pub fn acquire(self: &Arc<Self>, ip: IpAddr, dest: &str) -> Result<ConnectionLease, LimitError> {
         let mut g = self.inner.lock().expect("limits mutex poisoned");
+        let ip = limit_key(ip, g.cfg.ipv4_prefix, g.cfg.ipv6_prefix);
         if capped(g.cfg.max_global_connections, g.global_connections) {
             return Err(LimitError::GlobalFull);
         }
@@ -241,6 +286,7 @@ impl LimitState {
             return Ok(());
         }
         let mut g = self.inner.lock().expect("limits mutex poisoned");
+        let ip = limit_key(ip, g.cfg.ipv4_prefix, g.cfg.ipv6_prefix);
         if g.cfg.max_bytes_per_ip == 0 {
             return Ok(());
         }
@@ -281,10 +327,14 @@ impl Drop for ConnectionLease {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     fn ip(n: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(203, 0, 113, n))
+    }
+
+    fn v6(host: u16) -> IpAddr {
+        IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, host))
     }
 
     #[test]
@@ -383,6 +433,39 @@ mod tests {
         state.add_bytes(ip(1), 3).unwrap();
         assert_eq!(state.add_bytes(ip(1), 1).unwrap_err(), LimitError::ByteCap);
         assert!(state.add_bytes(ip(2), 10).is_ok());
+    }
+
+    #[test]
+    fn ipv6_same_slash64_shares_budget() {
+        let state = Arc::new(LimitState::new(LimitsConfig {
+            max_conns_per_ip: 1,
+            ipv6_prefix: 64,
+            ..LimitsConfig::unlimited()
+        }));
+        let _a = state.acquire(v6(1), "imap.example:993").unwrap();
+        assert_eq!(
+            state.acquire(v6(2), "imap.example:993").unwrap_err(),
+            LimitError::PerIpFull
+        );
+        // A different /64 is independent.
+        assert!(state.acquire(IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 1, 0, 0, 0, 0, 1)), "imap.example:993").is_ok());
+    }
+
+    #[test]
+    fn ipv4_prefix_can_aggregate_slash24() {
+        let state = Arc::new(LimitState::new(LimitsConfig {
+            connects_per_ip: 1,
+            ipv4_prefix: 24,
+            ..LimitsConfig::unlimited()
+        }));
+        state.record_attempt(ip(1), "a:993").unwrap();
+        assert_eq!(
+            state.record_attempt(ip(99), "a:993").unwrap_err(),
+            LimitError::ConnectRate
+        );
+        assert!(state
+            .record_attempt(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)), "a:993")
+            .is_ok());
     }
 
     #[test]
