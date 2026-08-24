@@ -2,6 +2,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
+use bytes::Bytes;
 use futures_util::{
     sink::SinkExt,
     stream::{SplitSink, StreamExt},
@@ -166,7 +167,6 @@ impl Connection {
                 if let Err(reason) = self.probe(&mut websocket, &mut tcp, kind).await {
                     METRICS.inc_reject(reason);
                     let _ = websocket.send(Message::Close(None)).await;
-                    let _ = websocket.close().await;
                     let _ = tcp.shutdown().await;
                     return;
                 }
@@ -276,7 +276,7 @@ impl Connection {
                             // happy and surfaces a dead peer if the write fails.
                             debug!(self.log, "WS idle; sending keepalive ping");
                             if self
-                                .send_ws(&mut ws_write, Message::Ping(Vec::new()))
+                                .send_ws(&mut ws_write, Message::Ping(Bytes::new()))
                                 .await
                                 .is_err()
                             {
@@ -305,7 +305,7 @@ impl Connection {
                             if self.account_bytes(size).is_err() {
                                 break;
                             }
-                            let msg = Message::Binary(buffer[..size].to_vec());
+                            let msg = Message::Binary(Bytes::copy_from_slice(&buffer[..size]));
                             if self.send_ws(&mut ws_write, msg).await.is_err() {
                                 break;
                             }
@@ -440,7 +440,7 @@ impl Connection {
 
         timeout(
             self.config.ws_write_timeout,
-            ws.send(Message::Binary(greet)),
+            ws.send(Message::Binary(Bytes::from(greet))),
         )
         .await
         .map_err(|_| RejectReason::Proto)?

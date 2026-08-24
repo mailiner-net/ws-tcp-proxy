@@ -49,7 +49,9 @@ fn parse_secret_key() -> Option<PasetoSymmetricKey<V4, Local>> {
         );
         return None;
     }
-    Some(PasetoSymmetricKey::<V4, Local>::from(Key::from(bytes)))
+    Some(PasetoSymmetricKey::<V4, Local>::from(
+        Key::try_from(bytes).ok()?,
+    ))
 }
 
 fn parse_auth_mode() -> AuthMode {

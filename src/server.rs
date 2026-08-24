@@ -217,6 +217,8 @@ fn validate_token(
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
+    // rusty_paseto 0.10 still requires PasetoClaimError in ValidatorFn closures.
+    #[allow(deprecated)]
     let claims = PasetoParser::<V4, Local>::default()
         .validate_claim(ExpirationClaim::default(), &|_, value| {
             let val = value.as_str().unwrap_or_default();
