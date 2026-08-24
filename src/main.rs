@@ -169,6 +169,7 @@ async fn main() -> Result<(), tokio::io::Error> {
         listen_port: args.port,
         secret_key: parse_secret_key(),
         metrics_auth_key: parse_metrics_auth_key(),
+        metrics_bind: std::env::var("MAILINER_METRICS_ADDR").ok().filter(|s| !s.is_empty()),
         ..Config::default()
     };
     apply_env(&mut config);

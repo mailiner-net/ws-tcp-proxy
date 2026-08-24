@@ -10,7 +10,7 @@ use tokio::net::TcpListener;
 use axum::body::Body;
 use axum::debug_handler;
 use axum::extract::{ConnectInfo, Query, State, WebSocketUpgrade};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, Router};
 
@@ -132,6 +132,27 @@ fn limit_message(err: &LimitError) -> &'static str {
         LimitError::DistinctDests => "too many distinct destinations",
         LimitError::ByteCap => "byte limit exceeded",
     }
+}
+
+/// Constant-time compare for bearer tokens. Length mismatch still returns
+/// false after a dummy pass so short tokens are not a cheap reject.
+fn token_eq(a: &[u8], b: &[u8]) -> bool {
+    let mut diff = a.len() ^ b.len();
+    let n = a.len().max(b.len());
+    for i in 0..n {
+        let x = *a.get(i).unwrap_or(&0);
+        let y = *b.get(i).unwrap_or(&0);
+        diff |= (x ^ y) as usize;
+    }
+    diff == 0
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    raw.strip_prefix("Bearer ")
+        .or_else(|| raw.strip_prefix("bearer "))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 fn validate_token(
@@ -312,10 +333,15 @@ struct MetricsQuery {
 #[debug_handler]
 async fn metrics_handler(
     State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
     Query(query): Query<MetricsQuery>,
 ) -> impl IntoResponse {
     if let Some(metrics_auth_key) = state.config.metrics_auth_key.as_ref() {
-        if query.token.as_deref() != Some(metrics_auth_key) {
+        let provided = bearer_token(&headers).or(query.token.as_deref());
+        let ok = provided
+            .map(|p| token_eq(p.as_bytes(), metrics_auth_key.as_bytes()))
+            .unwrap_or(false);
+        if !ok {
             return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
         }
     }
@@ -324,20 +350,46 @@ async fn metrics_handler(
     (StatusCode::OK, METRICS.encode()).into_response()
 }
 
+fn proxy_router(state: Arc<ServerState>) -> Router {
+    Router::new().route("/proxy", get(proxy_handler).with_state(state))
+}
+
+fn metrics_router(state: Arc<ServerState>) -> Router {
+    Router::new().route("/metrics", get(metrics_handler).with_state(state))
+}
+
 pub async fn run_proxy(listener: TcpListener, config: Config) -> Result<(), Error> {
     let limits = Arc::new(LimitState::new(config.limits.clone()));
+    let metrics_bind = config.metrics_bind.clone();
     let state = Arc::new(ServerState {
         log: DEFAULT_LOGGER.get().unwrap().clone(),
         config: Arc::new(config),
         limits,
     });
 
-    let app = Router::new()
-        .route("/proxy", get(proxy_handler).with_state(Arc::clone(&state)))
-        .route(
-            "/metrics",
-            get(metrics_handler).with_state(Arc::clone(&state)),
-        );
+    if let Some(addr) = metrics_bind.clone() {
+        let metrics_state = Arc::clone(&state);
+        let log = state.log.clone();
+        tokio::spawn(async move {
+            match TcpListener::bind(&addr).await {
+                Ok(mlistener) => {
+                    info!(log, "Metrics listening"; "addr" => addr.as_str());
+                    let app = metrics_router(metrics_state);
+                    if let Err(e) = axum::serve(mlistener, app).await {
+                        error!(log, "Metrics server exited"; "error" => e.to_string());
+                    }
+                }
+                Err(e) => {
+                    error!(log, "Failed to bind metrics listener"; "addr" => addr.as_str(), "error" => e.to_string());
+                }
+            }
+        });
+    }
+
+    let mut app = proxy_router(Arc::clone(&state));
+    if metrics_bind.is_none() {
+        app = app.merge(metrics_router(state));
+    }
 
     axum::serve(
         listener,
@@ -364,7 +416,7 @@ mod test {
     use crate::init_logging;
     use crate::limits::LimitsConfig;
 
-    use super::{client_ip, host_allowed, origin_allowed, run_proxy};
+    use super::{bearer_token, client_ip, host_allowed, origin_allowed, run_proxy, token_eq};
 
     struct TestServer {
         port: u16,
@@ -462,6 +514,24 @@ mod test {
             client_ip(&headers, peer, true, &[other]).to_string(),
             "127.0.0.1"
         );
+    }
+
+    #[test]
+    fn token_eq_is_length_aware() {
+        assert!(token_eq(b"abc", b"abc"));
+        assert!(!token_eq(b"abc", b"abd"));
+        assert!(!token_eq(b"abc", b"ab"));
+        assert!(!token_eq(b"abc", b"abcd"));
+    }
+
+    #[test]
+    fn bearer_token_parses_authorization() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer s3cret".parse().unwrap());
+        assert_eq!(bearer_token(&headers), Some("s3cret"));
+        headers.insert("authorization", "bearer  also".parse().unwrap());
+        assert_eq!(bearer_token(&headers), Some("also"));
+        assert_eq!(bearer_token(&HeaderMap::new()), None);
     }
 
     #[test]

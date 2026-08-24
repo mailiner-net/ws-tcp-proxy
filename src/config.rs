@@ -23,6 +23,8 @@ pub struct Config {
 
     pub secret_key: Option<PasetoSymmetricKey<V4, Local>>,
     pub metrics_auth_key: Option<String>,
+    /// If set, `/metrics` is served only on this bind address (e.g. `127.0.0.1:9401`).
+    pub metrics_bind: Option<String>,
     pub auth_mode: AuthMode,
 
     /// How long the WebSocket may be idle before we send a keepalive ping.
@@ -67,6 +69,7 @@ impl Default for Config {
             log_level: slog::Level::Info,
             secret_key: None,
             metrics_auth_key: None,
+            metrics_bind: None,
             auth_mode: AuthMode::Paseto,
             // 30s is a reasonable keepalive interval; idle IMAP is expected
             // and no longer kills the connection on its own.
