@@ -85,6 +85,14 @@ is entirely server-side.
 * `143` — server greeting must look like IMAP (`* …`).
 * `587` — server greeting must start with `220`.
 
+**Browser origin / Host**
+
+Set `MAILINER_ALLOWED_ORIGINS` to the Mailiner web app origin(s) so a
+random website cannot open a WebSocket through a visitor's browser.
+Native clients that omit `Origin` are still accepted. `*` disables the
+check. `MAILINER_ALLOWED_HOSTS` pins the HTTP `Host` header so the
+service is not usable via a raw IP or unexpected name.
+
 When the process sits behind Cloudflare, set `MAILINER_TRUST_FORWARDED_CLIENT_IP=1`
 so per-IP limits use `CF-Connecting-IP` (falling back to `X-Real-IP`). Do not
 enable this if clients can reach the proxy directly.
@@ -117,4 +125,6 @@ Rejected attempts increment `rejects_total{reason=...}` (`bad_port`,
 | `MAILINER_DNS_TIMEOUT_SECS` | `5` |
 | `MAILINER_TRUST_FORWARDED_CLIENT_IP` | `0` |
 | `MAILINER_REQUIRE_PROTOCOL_PROBE` | `1` |
+| `MAILINER_ALLOWED_ORIGINS` | empty (no check). Comma-separated, e.g. `https://app.mailiner.net` |
+| `MAILINER_ALLOWED_HOSTS` | empty (no check) |
 | `METRICS_AUTH_TOKEN` | required in release |

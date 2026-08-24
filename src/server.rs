@@ -14,7 +14,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, Router};
 
-use crate::config::{AuthMode, Config};
+use crate::config::{normalize_host, normalize_origin, AuthMode, Config};
 use crate::connection::Connection;
 use crate::dest::{self, DestError};
 use crate::limits::{LimitError, LimitState};
@@ -33,6 +33,38 @@ struct ServerState {
     log: Logger,
     config: Arc<Config>,
     limits: Arc<LimitState>,
+}
+
+fn origin_allowed(headers: &HeaderMap, allowed: &std::collections::HashSet<String>) -> bool {
+    if allowed.is_empty() || allowed.contains("*") {
+        return true;
+    }
+    let Some(raw) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    else {
+        // Native clients omit Origin; browsers always send it on WS.
+        return true;
+    };
+    let got = normalize_origin(raw);
+    allowed.iter().any(|o| normalize_origin(o) == got)
+}
+
+fn host_allowed(headers: &HeaderMap, allowed: &std::collections::HashSet<String>) -> bool {
+    if allowed.is_empty() {
+        return true;
+    }
+    let Some(raw) = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let got = normalize_host(raw);
+    allowed.iter().any(|h| {
+        let want = normalize_host(h);
+        got == want || got.split(':').next() == Some(want.as_str())
+    })
 }
 
 fn client_ip(headers: &HeaderMap, peer: SocketAddr, trust_forwarded: bool) -> IpAddr {
@@ -159,6 +191,23 @@ async fn proxy_handler(
 ) -> impl IntoResponse {
     let client = client_ip(&headers, addr, state.config.trust_forwarded_client_ip);
     let log = state.log.new(o!("client" => client.to_string()));
+
+    if !origin_allowed(&headers, &state.config.allowed_origins) {
+        return reject(
+            &log,
+            StatusCode::FORBIDDEN,
+            RejectReason::BadOrigin,
+            "origin not allowed",
+        );
+    }
+    if !host_allowed(&headers, &state.config.allowed_hosts) {
+        return reject(
+            &log,
+            StatusCode::FORBIDDEN,
+            RejectReason::BadHost,
+            "host not allowed",
+        );
+    }
 
     if let Err(err) = validate_token(
         &query,
@@ -303,7 +352,7 @@ mod test {
     use crate::init_logging;
     use crate::limits::LimitsConfig;
 
-    use super::{client_ip, run_proxy};
+    use super::{client_ip, host_allowed, origin_allowed, run_proxy};
 
     struct TestServer {
         port: u16,
@@ -391,6 +440,35 @@ mod test {
             client_ip(&headers, peer, false).to_string(),
             "127.0.0.1"
         );
+    }
+
+    #[test]
+    fn origin_allowlist_rejects_foreign_browser() {
+        use std::collections::HashSet;
+        let allowed: HashSet<String> = ["https://app.mailiner.net".into()].into();
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "https://evil.example".parse().unwrap());
+        assert!(!origin_allowed(&headers, &allowed));
+        headers.insert("origin", "https://app.mailiner.net".parse().unwrap());
+        assert!(origin_allowed(&headers, &allowed));
+        // Native client: no Origin.
+        assert!(origin_allowed(&HeaderMap::new(), &allowed));
+        let any: HashSet<String> = ["*".into()].into();
+        headers.insert("origin", "https://evil.example".parse().unwrap());
+        assert!(origin_allowed(&headers, &any));
+    }
+
+    #[test]
+    fn host_allowlist_matches_with_or_without_port() {
+        use std::collections::HashSet;
+        let allowed: HashSet<String> = ["proxy.example.com".into()].into();
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "proxy.example.com:9400".parse().unwrap());
+        assert!(host_allowed(&headers, &allowed));
+        headers.insert("host", "evil.example".parse().unwrap());
+        assert!(!host_allowed(&headers, &allowed));
+        assert!(!host_allowed(&HeaderMap::new(), &allowed));
+        assert!(host_allowed(&HeaderMap::new(), &HashSet::new()));
     }
 
     #[tokio::test]

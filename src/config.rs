@@ -43,6 +43,12 @@ pub struct Config {
     pub trust_forwarded_client_ip: bool,
     /// Run TLS-SNI / IMAP / SMTP greeting probes on well-known mail ports.
     pub require_protocol_probe: bool,
+    /// If non-empty, a browser `Origin` must be in this set. Requests with
+    /// no Origin (native clients) are still accepted. `*` allows any Origin.
+    pub allowed_origins: HashSet<String>,
+    /// If non-empty, the HTTP `Host` header must match one of these
+    /// values (case-insensitive, optional `:port`).
+    pub allowed_hosts: HashSet<String>,
 }
 
 impl Default for Config {
@@ -67,6 +73,8 @@ impl Default for Config {
             max_lifetime: Duration::from_secs(24 * 3600),
             trust_forwarded_client_ip: false,
             require_protocol_probe: true,
+            allowed_origins: HashSet::new(),
+            allowed_hosts: HashSet::new(),
         }
     }
 }
@@ -106,6 +114,32 @@ pub fn parse_allowed_ports(raw: &str) -> Option<HashSet<u16>> {
         }
     }
     Some(set)
+}
+
+/// Comma-separated list. Empty / unset → empty set (check disabled).
+pub fn parse_csv_set(raw: &str) -> HashSet<String> {
+    raw.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Normalize a Host header or allowlist entry for comparison.
+pub fn normalize_host(host: &str) -> String {
+    host.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Normalize an Origin (`scheme://host[:port]`) for comparison.
+pub fn normalize_origin(origin: &str) -> String {
+    let origin = origin.trim();
+    if origin == "*" {
+        return "*".to_string();
+    }
+    if let Some((scheme, rest)) = origin.split_once("://") {
+        format!("{}://{}", scheme.to_ascii_lowercase(), normalize_host(rest))
+    } else {
+        origin.to_ascii_lowercase()
+    }
 }
 
 pub fn env_bool(key: &str, default: bool) -> bool {
@@ -155,5 +189,17 @@ mod tests {
             parse_allowed_ports("993, 587"),
             Some(HashSet::from([993, 587]))
         );
+    }
+
+    #[test]
+    fn csv_set_and_origin_host_normalize() {
+        let set = parse_csv_set(" https://App.Example.com , * ");
+        assert!(set.contains("https://App.Example.com"));
+        assert!(set.contains("*"));
+        assert_eq!(
+            normalize_origin("HTTPS://APP.EXAMPLE.COM"),
+            "https://app.example.com"
+        );
+        assert_eq!(normalize_host("Proxy.Example.COM:443"), "proxy.example.com:443");
     }
 }

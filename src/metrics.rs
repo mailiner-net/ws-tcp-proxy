@@ -44,6 +44,8 @@ pub enum RejectReason {
     Proto,
     ByteCap,
     Lifetime,
+    BadOrigin,
+    BadHost,
 }
 
 impl From<crate::dest::DestError> for RejectReason {
