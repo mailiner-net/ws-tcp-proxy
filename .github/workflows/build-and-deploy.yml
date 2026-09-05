@@ -39,7 +39,7 @@ jobs:
             context: ${{ vars.code_directory }}
             push: true
             tags:
-                ${{ vars.GCP_REGION }}-docker.pkg.dev/mailiner/mailiner/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
+                ${{ vars.GCP_REGION }}-docker.pkg.dev/mailiner-net/mailiner-rs/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
 
         #- name: Deploy to Cloud Run
         #  id: deploy
@@ -52,4 +52,4 @@ jobs:
         #        MAILINER_PASETO_SECRET=MAILINER_PASETO_SECRET:latest
         #    env_vars: |
         #        LOG_LEVEL=debug
-        #    image: ${{ vars.GCP_REGION }}-docker.pkg.dev/mailiner/mailiner/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
+        #    image: ${{ vars.GCP_REGION }}-docker.pkg.dev/mailiner-net/mailiner-rs/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
