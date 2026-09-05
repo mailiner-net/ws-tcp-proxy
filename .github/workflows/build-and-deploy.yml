@@ -9,7 +9,7 @@ jobs:
         runs-on: ubuntu-latest
         permissions:
             contents: 'read'
-            id-token: 'write'
+            packages: 'write'
 
         steps:
         - name: Checkout
@@ -17,20 +17,13 @@ jobs:
         - name: Get revision
           id: vars
           run: echo "::set-output name=sha_short::$(git rev-parse --short HEAD)"
-        - name: Google Auth
-          id: auth
-          uses: 'google-github-actions/auth@v2'
-          with:
-            token_format: 'access_token'
-            workload_identity_provider: '${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}'
-            service_account: '${{ secrets.SERVICE_ACCOUNT_EMAIL }}'
         - name: Docker Auth
           id: docker-auth
           uses: 'docker/login-action@v3'
           with:
-            username: 'oauth2accesstoken'
-            password: '${{ steps.auth.outputs.access_token }}'
-            registry: '${{ vars.GCP_REGION }}-docker.pkg.dev'
+            registry: 'ghcr.io'
+            username: '${{ github.actor }}'
+            password: '${{ secrets.GITHUB_TOKEN }}'
 
         - name: Build, tag and push container
           id: build-image
@@ -39,7 +32,7 @@ jobs:
             context: ${{ vars.code_directory }}
             push: true
             tags:
-                ${{ vars.GCP_REGION }}-docker.pkg.dev/mailiner-net/mailiner-rs/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
+                ghcr.io/mailiner-net/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
 
         #- name: Deploy to Cloud Run
         #  id: deploy
@@ -52,4 +45,4 @@ jobs:
         #        MAILINER_PASETO_SECRET=MAILINER_PASETO_SECRET:latest
         #    env_vars: |
         #        LOG_LEVEL=debug
-        #    image: ${{ vars.GCP_REGION }}-docker.pkg.dev/mailiner-net/mailiner-rs/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
+        #    image: ghcr.io/mailiner-net/ws-tcp-proxy:${{ steps.vars.outputs.sha_short}}
