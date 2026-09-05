@@ -12,7 +12,7 @@ FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --no-create-home --uid 65532 proxy
+    && useradd --system --no-create-home --uid 65532 ws-tcp-proxy
 
 COPY --from=builder /usr/local/cargo/bin/ws-tcp-proxy /usr/local/bin/ws-tcp-proxy
 
