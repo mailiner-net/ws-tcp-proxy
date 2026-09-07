@@ -67,6 +67,32 @@ fn host_allowed(headers: &HeaderMap, allowed: &std::collections::HashSet<String>
     })
 }
 
+/// First usable address from a forwarded-client header.
+/// `X-Forwarded-For` is a comma list (client first, then proxies); the others
+/// are a single IP. Used only after the TCP peer is a trusted proxy.
+fn forwarded_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
+    // Preference matches the platforms we deploy behind:
+    // Cloudflare (`CF-Connecting-IP`), nginx (`X-Real-IP`), then Scaleway
+    // Serverless (`X-Forwarded-For`, first entry = client).
+    const NAMES: &[&str] = &[
+        "cf-connecting-ip",
+        "x-real-ip",
+        "x-forwarded-for",
+        "x-envoy-external-address",
+    ];
+    for name in NAMES {
+        let Some(value) = headers.get(*name).and_then(|v| v.to_str().ok()) else {
+            continue;
+        };
+        for token in value.split(',') {
+            if let Ok(ip) = token.trim().parse::<IpAddr>() {
+                return Some(ip);
+            }
+        }
+    }
+    None
+}
+
 fn client_ip(
     headers: &HeaderMap,
     peer: SocketAddr,
@@ -74,12 +100,8 @@ fn client_ip(
     trusted: &[crate::config::Cidr],
 ) -> IpAddr {
     if trust_forwarded && trusted.iter().any(|c| c.contains(peer.ip())) {
-        for name in ["cf-connecting-ip", "x-real-ip"] {
-            if let Some(value) = headers.get(name).and_then(|v| v.to_str().ok()) {
-                if let Ok(ip) = value.trim().parse::<IpAddr>() {
-                    return ip;
-                }
-            }
+        if let Some(ip) = forwarded_client_ip(headers) {
+            return ip;
         }
     }
     peer.ip()
@@ -415,8 +437,15 @@ async fn metrics_handler(
     (StatusCode::OK, METRICS.encode()).into_response()
 }
 
+async fn health_handler() -> impl IntoResponse {
+    (StatusCode::OK, "ok")
+}
+
 fn proxy_router(state: Arc<ServerState>) -> Router {
-    Router::new().route("/proxy", get(proxy_handler).with_state(state))
+    Router::new()
+        .route("/health", get(health_handler))
+        .route("/proxy", get(proxy_handler))
+        .with_state(state)
 }
 
 fn metrics_router(state: Arc<ServerState>) -> Router {
@@ -606,6 +635,22 @@ mod test {
     }
 
     #[test]
+    fn client_ip_uses_x_forwarded_for_when_trusted() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.50, 10.1.2.3".parse().unwrap());
+        let peer: SocketAddr = "10.0.0.2:9".parse().unwrap();
+        let mesh = crate::config::Cidr::parse("10.0.0.0/8").unwrap();
+        assert_eq!(
+            client_ip(&headers, peer, true, &[mesh]).to_string(),
+            "203.0.113.50"
+        );
+        assert_eq!(
+            client_ip(&headers, peer, false, &[mesh]).to_string(),
+            "10.0.0.2"
+        );
+    }
+
+    #[test]
     fn token_eq_is_length_aware() {
         assert!(token_eq(b"abc", b"abc"));
         assert!(!token_eq(b"abc", b"abd"));
@@ -664,6 +709,35 @@ mod test {
         assert!(!host_allowed(&headers, &allowed));
         assert!(!host_allowed(&HeaderMap::new(), &allowed));
         assert!(host_allowed(&HeaderMap::new(), &HashSet::new()));
+    }
+
+    #[tokio::test]
+    async fn health_returns_ok() {
+        let (proxy_port, _) = create_servers(None).await;
+        let body = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut stream = None;
+            for _ in 0..50 {
+                if let Ok(s) = tokio::net::TcpStream::connect(("127.0.0.1", proxy_port)).await {
+                    stream = Some(s);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let mut stream = stream.expect("proxy never accepted");
+            stream
+                .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("write health");
+            let mut buf = Vec::new();
+            stream.read_to_end(&mut buf).await.expect("read health");
+            String::from_utf8_lossy(&buf).into_owned()
+        })
+        .await
+        .expect("health request timed out");
+        assert!(
+            body.starts_with("HTTP/1.1 200"),
+            "unexpected health response: {body}"
+        );
     }
 
     #[tokio::test]

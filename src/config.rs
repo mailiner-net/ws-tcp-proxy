@@ -41,8 +41,9 @@ pub struct Config {
     pub max_bytes_per_connection: u64,
     /// Hard session lifetime. `Duration::ZERO` = unlimited.
     pub max_lifetime: Duration,
-    /// Honour `CF-Connecting-IP` (and `X-Real-IP`) instead of the TCP peer.
-    /// Headers are used only when the TCP peer is in [`Self::trusted_proxies`].
+    /// Honour `CF-Connecting-IP`, `X-Real-IP`, then `X-Forwarded-For`
+    /// (Scaleway Serverless) instead of the TCP peer. Headers are used only
+    /// when the TCP peer is in [`Self::trusted_proxies`].
     pub trust_forwarded_client_ip: bool,
     /// CIDRs of reverse proxies allowed to set the forwarded-client header.
     /// Empty ⇒ forwarded headers are ignored even if trust is enabled.
