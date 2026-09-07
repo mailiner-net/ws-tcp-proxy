@@ -208,6 +208,7 @@ COMMON_ARGS=(
   "timeout=3600s"
   "liveness-probe.http.path=/health"
   "liveness-probe.interval=10s"
+  "liveness-probe.timeout=1s"
   "liveness-probe.failure-threshold=3"
   "description=WebSocket to TCP mail proxy"
 )
