@@ -101,10 +101,11 @@ Native clients that omit `Origin` are still accepted. `*` disables the
 check. `MAILINER_ALLOWED_HOSTS` pins the HTTP `Host` header so the
 service is not usable via a raw IP or unexpected name.
 
-When the process sits behind Cloudflare (or another reverse proxy), set
-`MAILINER_TRUST_FORWARDED_CLIENT_IP=1` **and**
-`MAILINER_TRUSTED_PROXIES` to that proxy's CIDRs so per-IP limits use
-`CF-Connecting-IP` (falling back to `X-Real-IP`). Forwarded headers are
+When the process sits behind Cloudflare, Scaleway Serverless Containers,
+or another reverse proxy, set `MAILINER_TRUST_FORWARDED_CLIENT_IP=1`
+**and** `MAILINER_TRUSTED_PROXIES` to that proxy's CIDRs so per-IP
+limits use `CF-Connecting-IP`, then `X-Real-IP`, then the first address
+in `X-Forwarded-For` (what Scaleway injects). Forwarded headers are
 ignored unless the TCP peer is in that list — do not publish the origin
 and leave the list empty.
 
@@ -145,3 +146,43 @@ Rejected attempts increment `rejects_total{reason=...}` (`bad_port`,
 | `METRICS_AUTH_TOKEN` | required in release (`Authorization: Bearer` preferred; `?token=` still accepted) |
 | `MAILINER_METRICS_ADDR` | empty (serve `/metrics` on the public listener). Set e.g. `127.0.0.1:9401` to bind privately |
 | `MAILINER_UNSAFE` | `0` — release builds refuse `any` ports, private dests, IP literals, disabled probes/caps, public auth without origins, and forwarded-IP trust without CIDRs |
+
+## Deploy on Scaleway Serverless Containers
+
+The image already listens on `$PORT`. A helper script builds an amd64
+image, pushes it to the Scaleway Container Registry, and creates or
+updates the Serverless Container.
+
+```
+cp .env.scaleway.example .env.scaleway   # then fill secrets
+# Install https://github.com/scaleway/scaleway-cli and run `scw init`
+./scripts/deploy-scaleway.sh
+```
+
+The container URL is `wss://<domain>/proxy?remote=<host>:<port>`.
+`GET /health` is the readiness probe.
+
+**Platform limits that matter for this proxy**
+
+* A WebSocket is one HTTP request. Scaleway kills it after **60 minutes**.
+  The script sets `MAILINER_MAX_LIFETIME_SECS=3540` so the process closes
+  first. The Mailiner client must reconnect.
+* Outbound **TCP 25 and 465 are blocked**. IMAP (`143`/`993`) and
+  submission (`587`) work; SMTPS on `465` does not.
+* **80 concurrent connections per instance.** Rate limits are in-process,
+  so the script pins `max-scale=1`. Raise it only if you accept
+  per-replica counters.
+* `min-scale=1` keeps one instance warm (no cold start on the first
+  IMAP session). `min-scale=0` is cheaper and scales to zero after 15
+  minutes idle.
+
+GitHub Actions: workflow **Build & Deploy** runs on push to `main` and
+on `workflow_dispatch`. It builds `linux/amd64`, pushes to the Scaleway
+Container Registry, and updates the Serverless Container.
+
+Secrets: `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID`,
+`SCW_DEFAULT_ORGANIZATION_ID`, `MAILINER_PASETO_SECRET`,
+`METRICS_AUTH_TOKEN`. Optional variables: `SCW_DEFAULT_REGION`,
+`SCALEWAY_REGISTRY_NS`, `SCALEWAY_CONTAINER_NS`,
+`SCALEWAY_CONTAINER_NAME`, `MAILINER_AUTH`, `MAILINER_ALLOWED_ORIGINS`,
+`MAILINER_ALLOWED_HOSTS`.
