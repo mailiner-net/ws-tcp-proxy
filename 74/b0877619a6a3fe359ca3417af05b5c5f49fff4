@@ -1,0 +1,19 @@
+scripts/deploy-scaleway.sh
+  s_d070d2a8beaa37::t_11b63662b5d5df 211
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "74b0877619a6a3fe359ca3417af05b5c5f49fff4",
+  "prompts": {},
+  "sessions": {
+    "s_d070d2a8beaa37": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a07d1c-9950-7023-997f-aa4793675522",
+        "model": "unknown"
+      },
+      "human_author": "Daniel Vrátil <me@dvratil.cz>"
+    }
+  }
+}
